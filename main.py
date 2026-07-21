@@ -138,6 +138,25 @@ async def models():
     return {"models": await _fetch_models(), "mock": MOCK_LLM}
 
 
+@app.get("/api/health")
+async def health():
+    """探活/可观测端点：供监控或反向代理健康检查调用。"""
+    db_ok = False
+    try:
+        conn = db_store._conn()
+        conn.execute("SELECT 1")
+        conn.close()
+        db_ok = True
+    except Exception:
+        db_ok = False
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "mock": MOCK_LLM,
+        "ollama_base": OLLAMA_BASE,
+        "db": db_ok,
+    }
+
+
 @app.post("/api/chat")
 async def chat(request: Request):
     body = await request.json()

@@ -56,3 +56,13 @@ def test_new_clears_history():
     c.post("/api/new")  # 再次新会话应清空当前
     h = c.get("/api/history").json()
     assert h.get("messages") == []
+
+
+def test_health_endpoint():
+    c = TestClient(main.app)
+    r = c.get("/api/health")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] in ("ok", "degraded")
+    assert "ollama_base" in data
+    assert data["db"] is True  # WAL 后 SQLite 可读

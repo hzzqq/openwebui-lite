@@ -19,7 +19,15 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions.db"
 
 def _conn() -> sqlite3.Connection:
     # check_same_thread=False：FastAPI 异步事件循环可能跨线程访问
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    try:
+        # WAL：写操作走预写日志，显著降低并发写时的「database is locked」
+        # synchronous=NORMAL：在性能与持久性间取平衡（MVP 足够）
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    except Exception:
+        pass
+    return conn
 
 
 def init() -> None:
