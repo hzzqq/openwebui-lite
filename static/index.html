@@ -342,7 +342,27 @@ inputEl.addEventListener("input", () => {
   inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + "px";
 });
 
+// 页面加载时恢复已持久化的历史（打通「重启保留」承诺）
+async function loadHistory() {
+  try {
+    const resp = await fetch("/api/history");
+    const data = await resp.json();
+    const msgs = data.messages || [];
+    if (!msgs.length) return;
+    if (emptyEl) emptyEl.style.display = "none";
+    conversation = [];
+    for (const m of msgs) {
+      addMessage(m.role, m.content || "");
+      conversation.push({ role: m.role, content: m.content || "" });
+    }
+    if (data.model) setModelName(data.model);
+    const firstUser = msgs.find((m) => m.role === "user");
+    if (firstUser) updateTitle(firstUser.content);
+  } catch (e) { /* 历史加载失败不阻断主流程 */ }
+}
+
 loadModels();
+loadHistory();
 </script>
 </body>
 </html>
