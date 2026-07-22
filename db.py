@@ -47,6 +47,11 @@ def init() -> None:
             );
             """
         )
+        # 迁移：补 title 列（旧库兼容，已存在则忽略）
+        try:
+            conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+        except Exception:
+            pass
         conn.commit()
     finally:
         conn.close()
@@ -165,6 +170,24 @@ def count_messages(sid: str) -> int:
     return row[0] if row else 0
 
 
+def set_title(sid: str, title: str) -> None:
+    conn = _conn()
+    try:
+        conn.execute("UPDATE sessions SET title=? WHERE id=?", (title, sid))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_title(sid: str) -> str:
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT title FROM sessions WHERE id=?", (sid,)).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else ""
+
+
 def list_sessions() -> list[dict]:
     """列出全部会话（含消息数），用于多会话管理 UI。
 
@@ -173,17 +196,18 @@ def list_sessions() -> list[dict]:
     conn = _conn()
     try:
         rows = conn.execute(
-            "SELECT id, model, created FROM sessions ORDER BY created DESC"
+            "SELECT id, model, created, title FROM sessions ORDER BY created DESC"
         ).fetchall()
     finally:
         conn.close()
     out = []
-    for sid, model, created in rows:
+    for sid, model, created, title in rows:
         out.append(
             {
                 "id": sid,
                 "model": model,
                 "created": created,
+                "title": title or "",
                 "message_count": count_messages(sid),
             }
         )

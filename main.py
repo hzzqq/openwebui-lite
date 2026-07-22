@@ -175,6 +175,14 @@ async def chat(req: ChatRequest):
     # 每次前端传完整历史，整体落盘
     if messages:
         db_store.save_messages(sid, messages)
+        # 自动标题：首条用户消息 -> 会话标题（可观测性 + 多会话可读性）
+        if not db_store.get_title(sid):
+            for m in messages:
+                if m.get("role") == "user" and m.get("content"):
+                    title = m["content"].strip().replace("\n", " ")[:40]
+                    if title:
+                        db_store.set_title(sid, title)
+                    break
 
     async def event_gen():
         if MOCK_LLM:
@@ -207,6 +215,16 @@ async def chat(req: ChatRequest):
 async def list_sessions_ep():
     """多会话管理：列出全部会话及当前会话 id。"""
     return {"sessions": db_store.list_sessions(), "current": _current_sid()}
+
+
+@app.get("/api/sessions/{sid}")
+async def get_session_ep(sid: str):
+    """获取单个会话的标题与完整消息（用于「打开历史会话」）。"""
+    return {
+        "id": sid,
+        "title": db_store.get_title(sid),
+        "messages": db_store.get_messages(sid),
+    }
 
 
 @app.post("/api/sessions/{sid}/switch")

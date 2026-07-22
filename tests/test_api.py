@@ -105,3 +105,30 @@ def test_delete_session_removes_it():
     assert r.status_code == 200
     ids = [s["id"] for s in c.get("/api/sessions").json()["sessions"]]
     assert other not in ids
+
+
+def test_session_title_auto_set_and_listed():
+    c = TestClient(main.app)
+    c.post("/api/new")
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "如何部署模型服务"}]},
+    )
+    sessions = c.get("/api/sessions").json()["sessions"]
+    titles = [s["title"] for s in sessions]
+    assert any("如何部署模型服务" in t for t in titles)
+
+
+def test_get_session_by_id_returns_messages():
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "SESSION_TITLE_MARKER"}]},
+    )
+    r = c.get(f"/api/sessions/{sid}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["id"] == sid
+    assert "SESSION_TITLE_MARKER" in data["title"]
+    assert any("SESSION_TITLE_MARKER" in (m.get("content") or "") for m in data["messages"])
