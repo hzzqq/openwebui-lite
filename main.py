@@ -134,15 +134,26 @@ async def index():
     return HTMLResponse("<h1>static/index.html 未找到</h1>", status_code=404)
 
 
+class MessageItem(BaseModel):
+    """单条消息（输入校验，避免裸 dict 导致保存时 AttributeError 500）。"""
+    role: str
+    content: str = ""
+
+
 class ChatRequest(BaseModel):
     """聊天请求体（输入校验，避免裸 JSON 解析导致 500）。"""
     model: str = ""
-    messages: List[Dict] = Field(default_factory=list)
+    messages: List[MessageItem] = Field(default_factory=list)
 
 
 class SettingsRequest(BaseModel):
     """设置请求体（当前支持默认模型记忆）。"""
     default_model: str = ""
+
+
+class RenameRequest(BaseModel):
+    """会话重命名请求体。"""
+    title: str
 
 
 @app.get("/api/models")
@@ -186,7 +197,8 @@ async def health():
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     model = req.model
-    messages = req.messages
+    # 还原为内部使用的 dict 列表（已通过 Pydantic 校验，项为合法 {role, content}）
+    messages = [{"role": m.role, "content": m.content} for m in req.messages]
 
     sid = _current_sid()
     if model:
@@ -259,6 +271,14 @@ async def delete_session_ep(sid: str):
     """删除指定会话（避免旧会话无限堆积）。"""
     db_store.delete_session(sid)
     return {"ok": True, "session_id": sid}
+
+
+@app.post("/api/sessions/{sid}/rename")
+async def rename_session_ep(sid: str, req: RenameRequest):
+    """重命名会话（修正自动标题，提升多会话可读性）。"""
+    title = (req.title or "").strip()[:200]
+    db_store.set_title(sid, title)
+    return {"ok": True, "id": sid, "title": title}
 
 
 @app.get("/api/history")

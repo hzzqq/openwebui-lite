@@ -168,3 +168,26 @@ def test_frontend_wires_settings():
     assert "saveDefaultBtn" in html
     assert "loadSettings" in html
     assert "saveDefaultModel" in html
+
+
+def test_rename_session_updates_title():
+    """R1 新需求验证：POST /api/sessions/{sid}/rename 应更新标题。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    r = c.post(f"/api/sessions/{sid}/rename", json={"title": "我的自定义标题"})
+    assert r.status_code == 200
+    assert r.json()["title"] == "我的自定义标题"
+    got = c.get(f"/api/sessions/{sid}").json()
+    assert got["title"] == "我的自定义标题"
+
+
+def test_chat_rejects_malformed_messages():
+    """R2 隐性健壮性：messages 非法（非 {role,content}）应被校验拒绝，而非 500。"""
+    c = TestClient(main.app)
+    c.post("/api/new")
+    # 字符串混入消息列表 -> Pydantic 校验失败（422 而非 500）
+    r = c.post("/api/chat", json={"model": "mock", "messages": ["不是消息对象"]})
+    assert r.status_code == 422
+    # 合法但缺 content（默认空串）应被接受
+    r2 = c.post("/api/chat", json={"model": "mock", "messages": [{"role": "user"}]})
+    assert r2.status_code == 200
