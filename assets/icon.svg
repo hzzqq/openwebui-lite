@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="openwebui-lite icon">
+  <defs>
+    <linearGradient id="webGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#a855f7"/>
+    </linearGradient>
+  </defs>
+  <rect x="56" y="56" width="400" height="400" rx="112" ry="112" fill="url(#webGrad)"/>
+  <path d="M204 168 H308 A36 36 0 0 1 344 204 V296 A36 36 0 0 1 308 332 H252 L220 372 L196 332 A36 36 0 0 1 168 296 V204 A36 36 0 0 1 204 168 Z" fill="none" stroke="#ffffff" stroke-width="16" stroke-linejoin="round"/>
+  <path d="M256 193 L268.9 227.2 L305.5 228.9 L276.9 251.8 L286.6 287 L256 267 L225.4 287 L235.1 251.8 L206.5 228.9 L243.1 227.2 Z" fill="#ffffff"/>
+</svg>
