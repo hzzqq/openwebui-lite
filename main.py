@@ -140,9 +140,28 @@ class ChatRequest(BaseModel):
     messages: List[Dict] = Field(default_factory=list)
 
 
+class SettingsRequest(BaseModel):
+    """设置请求体（当前支持默认模型记忆）。"""
+    default_model: str = ""
+
+
 @app.get("/api/models")
 async def models():
     return {"models": await _fetch_models(), "mock": MOCK_LLM}
+
+
+@app.get("/api/settings")
+async def get_settings():
+    """读取通用设置（如跨会话默认模型）。"""
+    return {"default_model": db_store.get_setting("default_model", "")}
+
+
+@app.post("/api/settings")
+async def post_settings(req: SettingsRequest):
+    """写入通用设置（如默认模型），返回更新后的值。"""
+    if req.default_model:
+        db_store.set_setting("default_model", req.default_model)
+    return {"ok": True, "default_model": db_store.get_setting("default_model", "")}
 
 
 @app.get("/api/health")
@@ -172,6 +191,7 @@ async def chat(req: ChatRequest):
     sid = _current_sid()
     if model:
         db_store.set_model(sid, model)
+        db_store.set_setting("default_model", model)  # 记忆默认模型（跨会话）
     # 每次前端传完整历史，整体落盘
     if messages:
         db_store.save_messages(sid, messages)

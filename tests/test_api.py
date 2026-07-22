@@ -132,3 +132,30 @@ def test_get_session_by_id_returns_messages():
     assert data["id"] == sid
     assert "SESSION_TITLE_MARKER" in data["title"]
     assert any("SESSION_TITLE_MARKER" in (m.get("content") or "") for m in data["messages"])
+
+
+def test_settings_default_empty():
+    c = TestClient(main.app)
+    # 隔离：清空共享 kv（前面用例可能已写入默认模型）
+    main.db_store.set_setting("default_model", "")
+    r = c.get("/api/settings")
+    assert r.status_code == 200
+    assert r.json()["default_model"] == ""
+
+
+def test_settings_set_and_get():
+    c = TestClient(main.app)
+    r = c.post("/api/settings", json={"default_model": "qwen2.5"})
+    assert r.status_code == 200
+    assert r.json()["default_model"] == "qwen2.5"
+    assert c.get("/api/settings").json()["default_model"] == "qwen2.5"
+
+
+def test_chat_persists_default_model():
+    c = TestClient(main.app)
+    c.post("/api/new")
+    c.post(
+        "/api/chat",
+        json={"model": "my-model", "messages": [{"role": "user", "content": "x"}]},
+    )
+    assert c.get("/api/settings").json()["default_model"] == "my-model"

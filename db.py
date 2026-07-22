@@ -159,6 +159,27 @@ def new_session() -> str:
     return sid
 
 
+# ---------------------------------------------------------------------------
+# 通用设置（kv 复用，存跨会话偏好，如默认模型）
+# ---------------------------------------------------------------------------
+def get_setting(k: str, default: str = "") -> str:
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT v FROM kv WHERE k=?", (k,)).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else default
+
+
+def set_setting(k: str, v: str) -> None:
+    conn = _conn()
+    try:
+        conn.execute("INSERT OR REPLACE INTO kv(k, v) VALUES(?, ?)", (k, v))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def count_messages(sid: str) -> int:
     conn = _conn()
     try:
