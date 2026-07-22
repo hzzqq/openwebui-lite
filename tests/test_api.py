@@ -279,3 +279,34 @@ def test_list_sessions_message_count_matches():
     sessions = c.get("/api/sessions").json()["sessions"]
     target = next(s for s in sessions if s["id"] == sid)
     assert target["message_count"] == main.db_store.count_messages(sid)
+
+
+def test_search_finds_message_across_sessions():
+    """R1 新需求验证：GET /api/search 跨会话检索消息内容。"""
+    c = TestClient(main.app)
+    c.post("/api/new")
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "SEARCHABLE_KEYWORD_XYZ"}]},
+    )
+    r = c.get("/api/search?q=SEARCHABLE_KEYWORD_XYZ")
+    assert r.status_code == 200
+    results = r.json()["results"]
+    assert any("SEARCHABLE_KEYWORD_XYZ" in (x.get("content") or "") for x in results)
+    assert results[0]["session_id"]
+
+
+def test_search_empty_query_returns_empty():
+    c = TestClient(main.app)
+    r = c.get("/api/search?q=")
+    assert r.status_code == 200
+    assert r.json()["results"] == []
+
+
+def test_models_endpoint_is_cached():
+    """R2 验证：/api/models 命中 5s TTL 缓存，避免重复打 Ollama。"""
+    c = TestClient(main.app)
+    r = c.get("/api/models")
+    assert r.status_code == 200
+    # 调用后缓存应被填充，且内容与响应一致
+    assert main._MODELS_CACHE["data"] == r.json()["models"]

@@ -266,6 +266,28 @@ def get_stats() -> dict:
     return {"sessions": s_count, "messages": m_count}
 
 
+def search_messages(q: str, limit: int = 50) -> list[dict]:
+    """跨会话按内容模糊检索消息（LIKE 匹配），用于历史定位。
+
+    返回 [{"session_id", "title", "role", "content"}, ...]，按插入顺序倒序。
+    """
+    like = f"%{q}%"
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT m.session_id, s.title, m.role, m.content "
+            "FROM messages m LEFT JOIN sessions s ON s.id = m.session_id "
+            "WHERE m.content LIKE ? ORDER BY m.rowid DESC LIMIT ?",
+            (like, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {"session_id": sid, "title": title or "", "role": role, "content": content}
+        for sid, title, role, content in rows
+    ]
+
+
 def switch_session(sid: str) -> str:
     """切换当前会话指针到指定 sid（不存在则先 ensure）。"""
     ensure_session(sid)

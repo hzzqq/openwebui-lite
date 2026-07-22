@@ -56,22 +56,38 @@ def _load_session() -> Dict:
 # ---------- 默认模型（Ollama 连不上时使用） ----------
 DEFAULT_MODELS = ["llama3", "qwen2", "gemma2", "mistral"]
 
+# 模型列表短缓存（5s）：避免每次 /api/models 都打 Ollama，缓解性能悬崖
+_MODELS_CACHE: "dict" = {"ts": 0.0, "data": None}
+MODELS_CACHE_TTL = 5.0
+
 
 async def _fetch_models() -> List[str]:
-    """拉取 Ollama 可用模型，失败回退默认列表。"""
+    """拉取 Ollama 可用模型，失败回退默认列表。
+
+    隐性性能：原实现每次调用都实时请求 Ollama，前端轮询/多标签页会反复打上游。
+    这里加 5s TTL 缓存，命中则直接返回，显著降低对 Ollama 的压力。
+    """
+    now = time.time()
+    if _MODELS_CACHE["data"] is not None and now - _MODELS_CACHE["ts"] < MODELS_CACHE_TTL:
+        return _MODELS_CACHE["data"]
+    models: List[str]
     if MOCK_LLM:
-        return ["mock-model (离线演示)"] + DEFAULT_MODELS
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{OLLAMA_BASE}/api/tags")
-            if resp.status_code == 200:
-                data = resp.json()
-                models = [m.get("name") for m in data.get("models", []) if m.get("name")]
-                if models:
-                    return models
-    except Exception:
-        pass
-    return DEFAULT_MODELS
+        models = ["mock-model (离线演示)"] + DEFAULT_MODELS
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(f"{OLLAMA_BASE}/api/tags")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = [m.get("name") for m in data.get("models", []) if m.get("name")]
+                    if models:
+                        _MODELS_CACHE.update(ts=now, data=models)
+                        return models
+        except Exception:
+            pass
+        models = DEFAULT_MODELS
+    _MODELS_CACHE.update(ts=now, data=models)
+    return models
 
 
 # ---------- SSE 工具 ----------
@@ -203,6 +219,16 @@ async def stats():
         "messages": s["messages"],
         "current": _current_sid(),
     }
+
+
+@app.get("/api/search")
+async def search(q: str = "", limit: int = 50):
+    """跨会话全文检索消息（按内容模糊匹配），便于在历史中定位关键信息。"""
+    if not q:
+        return {"results": []}
+    limit = max(1, min(int(limit), 200))  # 钳制上限，避免超大结果集拖垮响应
+    results = db_store.search_messages(q, limit=limit)
+    return {"results": results}
 
 
 @app.post("/api/chat")
