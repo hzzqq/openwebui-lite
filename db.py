@@ -224,26 +224,46 @@ def list_sessions() -> list[dict]:
     """列出全部会话（含消息数），用于多会话管理 UI。
 
     按建立时间倒序，最近的在前。
+    隐性性能：原实现对每个会话各发一次 count_messages 查询（N+1），会话多时
+    列表端点明显变慢；这里用一次 LEFT JOIN + GROUP BY 拿到全部消息计数。
     """
     conn = _conn()
     try:
         rows = conn.execute(
-            "SELECT id, model, created, title FROM sessions ORDER BY created DESC"
+            "SELECT s.id, s.model, s.created, s.title, COALESCE(m.cnt, 0) "
+            "FROM sessions s "
+            "LEFT JOIN (SELECT session_id, COUNT(*) AS cnt FROM messages GROUP BY session_id) m "
+            "ON m.session_id = s.id "
+            "ORDER BY s.created DESC"
         ).fetchall()
     finally:
         conn.close()
     out = []
-    for sid, model, created, title in rows:
+    for sid, model, created, title, cnt in rows:
         out.append(
             {
                 "id": sid,
                 "model": model,
                 "created": created,
                 "title": title or "",
-                "message_count": count_messages(sid),
+                "message_count": cnt,
             }
         )
     return out
+
+
+def get_stats() -> dict:
+    """返回全局统计（会话总数 / 消息总数），供 /api/stats 等可观测端点使用。
+
+    单连接内两次聚合，避免多次往返。
+    """
+    conn = _conn()
+    try:
+        s_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        m_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    finally:
+        conn.close()
+    return {"sessions": s_count, "messages": m_count}
 
 
 def switch_session(sid: str) -> str:

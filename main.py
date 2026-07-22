@@ -194,6 +194,17 @@ async def health():
     }
 
 
+@app.get("/api/stats")
+async def stats():
+    """全局统计（可观测性）：会话总数、消息总数、当前会话 id。"""
+    s = db_store.get_stats()
+    return {
+        "sessions": s["sessions"],
+        "messages": s["messages"],
+        "current": _current_sid(),
+    }
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     model = req.model

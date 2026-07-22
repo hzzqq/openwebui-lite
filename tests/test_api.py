@@ -250,3 +250,32 @@ def test_chat_rejects_malformed_messages():
     # 合法但缺 content（默认空串）应被接受
     r2 = c.post("/api/chat", json={"model": "mock", "messages": [{"role": "user"}]})
     assert r2.status_code == 200
+
+
+def test_stats_endpoint():
+    """R1 新需求验证：GET /api/stats 返回会话/消息总数与当前会话。"""
+    c = TestClient(main.app)
+    c.post("/api/new")
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "统计测试"}]},
+    )
+    r = c.get("/api/stats")
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data["sessions"], int) and data["sessions"] >= 1
+    assert isinstance(data["messages"], int) and data["messages"] >= 1
+    assert data["current"]
+
+
+def test_list_sessions_message_count_matches():
+    """R2 验证：list_sessions 的单查询计数与 count_messages 一致（无 N+1 回归）。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "计数校验"}]},
+    )
+    sessions = c.get("/api/sessions").json()["sessions"]
+    target = next(s for s in sessions if s["id"] == sid)
+    assert target["message_count"] == main.db_store.count_messages(sid)
