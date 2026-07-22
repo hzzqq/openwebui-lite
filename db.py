@@ -298,6 +298,44 @@ def list_sessions() -> list[dict]:
     return out
 
 
+def search_sessions(q: str, limit: int = 50) -> list[dict]:
+    """按标题模糊检索会话（LIKE 匹配），用于多会话列表的快速定位。
+
+    R1 新能力：会话数量多时，按标题关键词筛出相关会话（与 /api/search 的
+    消息内容检索互补——一个按「会话标题」，一个按「消息正文」）。
+
+    R2 一致性：与 search_messages 一致，先转义 LIKE 通配符 `%`/`_`，
+    避免搜索词里的「50%」「user_name」被当成模式导致误命中。
+    """
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = f"%{escaped}%"
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT s.id, s.model, s.created, s.title, COALESCE(m.cnt, 0) "
+            "FROM sessions s "
+            "LEFT JOIN (SELECT session_id, COUNT(*) AS cnt FROM messages GROUP BY session_id) m "
+            "ON m.session_id = s.id "
+            "WHERE s.title LIKE ? ESCAPE '\\' "
+            "ORDER BY s.created DESC LIMIT ?",
+            (like, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for sid, model, created, title, cnt in rows:
+        out.append(
+            {
+                "id": sid,
+                "model": model,
+                "created": created,
+                "title": title or "",
+                "message_count": cnt,
+            }
+        )
+    return out
+
+
 def get_stats() -> dict:
     """返回全局统计（会话总数 / 消息总数），供 /api/stats 等可观测端点使用。
 
@@ -346,8 +384,14 @@ def switch_session(sid: str) -> str:
     return sid
 
 
-def delete_session(sid: str) -> None:
-    """删除会话及其全部消息；若删的是当前会话，自动重建一个干净当前会话。"""
+def delete_session(sid: str) -> str:
+    """删除会话及其全部消息；若删的是当前会话，自动重建一个干净当前会话。
+
+    R2 修复（隐性一致性缺陷）：原实现返回 None，端点只能回填被删的 sid，
+    但删除当前会话后 current 指针已悄悄切到一个新会话——前端据此误以为
+    「被删会话仍是当前」，造成状态错乱。现返回「删除后的当前会话 id」，
+    让前端能正确刷新当前指针。
+    """
     conn = _conn()
     try:
         conn.execute("DELETE FROM messages WHERE session_id=?", (sid,))
@@ -357,6 +401,7 @@ def delete_session(sid: str) -> None:
         conn.close()
     if get_current_sid() == sid:
         new_session()  # 避免 current 指针悬空
+    return get_current_sid()
 
 
 def clear_messages(sid: str) -> None:

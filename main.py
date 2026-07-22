@@ -338,9 +338,17 @@ async def chat(req: ChatRequest, stream: bool = True):
 
 
 @app.get("/api/sessions")
-async def list_sessions_ep():
-    """多会话管理：列出全部会话及当前会话 id。"""
-    return {"sessions": db_store.list_sessions(), "current": _current_sid()}
+async def list_sessions_ep(title: str = ""):
+    """多会话管理：列出全部会话及当前会话 id。
+
+    R1 新能力：可选 ?title= 关键词，按会话标题过滤（与 /api/search 的消息正文
+    检索互补），便于会话多时快速定位目标会话。
+    """
+    if title:
+        sessions = db_store.search_sessions(title)
+    else:
+        sessions = db_store.list_sessions()
+    return {"sessions": sessions, "current": _current_sid()}
 
 
 @app.get("/api/sessions/{sid}")
@@ -362,9 +370,13 @@ async def switch_session_ep(sid: str):
 
 @app.delete("/api/sessions/{sid}")
 async def delete_session_ep(sid: str):
-    """删除指定会话（避免旧会话无限堆积）。"""
-    db_store.delete_session(sid)
-    return {"ok": True, "session_id": sid}
+    """删除指定会话（避免旧会话无限堆积）。
+
+    R2 修复：删除当前会话后，返回「删除后的当前会话 id」（可能为新重建的会话），
+    而非被删会话 id，避免前端把已删会话误认为仍在进行中。
+    """
+    new_sid = db_store.delete_session(sid)
+    return {"ok": True, "session_id": new_sid}
 
 
 @app.post("/api/sessions/{sid}/rename")

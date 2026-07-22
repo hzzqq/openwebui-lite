@@ -107,6 +107,48 @@ def test_delete_session_removes_it():
     assert other not in ids
 
 
+def test_delete_current_session_returns_new_current():
+    """R2 隐性一致性验证：删除当前会话后，接口应返回「删除后的当前会话 id」，
+    而非被删会话 id，避免前端把已删会话误认为仍在进行中。"""
+    c = TestClient(main.app)
+    cur = c.post("/api/new").json()["session_id"]  # 当前 = cur
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "临时问题"}]},
+    )
+    r = c.delete(f"/api/sessions/{cur}")
+    assert r.status_code == 200
+    returned = r.json()["session_id"]
+    assert returned != cur  # 不应再返回已删会话
+    # 返回的 id 应当就是新的当前会话指针
+    assert c.get("/api/current").json()["session_id"] == returned
+
+
+def test_list_sessions_title_filter():
+    """R1 新需求验证：?title= 按标题过滤会话列表。"""
+    c = TestClient(main.app)
+    c.post("/api/new")
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "苹果供应链分析"}]},
+    )
+    c.post("/api/new")
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "新能源汽车销量"}]},
+    )
+    # 只筛标题含「苹果」的会话
+    r = c.get("/api/sessions", params={"title": "苹果"})
+    assert r.status_code == 200
+    titles = [s["title"] for s in r.json()["sessions"]]
+    assert any("苹果" in t for t in titles)
+    assert not any("新能源" in t for t in titles)
+    # 无匹配也应返回 200 且为空列表（而非报错）
+    r2 = c.get("/api/sessions", params={"title": "不存在的标题xyz"})
+    assert r2.status_code == 200
+    assert r2.json()["sessions"] == []
+
+
 def test_session_title_auto_set_and_listed():
     c = TestClient(main.app)
     c.post("/api/new")
