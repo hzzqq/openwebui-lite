@@ -95,6 +95,28 @@ def _sse(event: str, data: str) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
 
+async def _collect_sse_text(gen) -> str:
+    """把 SSE 事件流还原为纯文本（非流式模式复用同一套生成器）。
+
+    事件形如 "event: token\ndata: \"...\"\n\n"；token 事件 data 为字符串，
+    done/error 事件 data 为对象（忽略其文本）。用于 stream=0 时拼出完整回复。
+    """
+    parts = []
+    async for evt in gen:
+        if "data: " not in evt:
+            continue
+        payload = evt.split("data: ", 1)[1].strip()
+        if not payload:
+            continue
+        try:
+            data = json.loads(payload)
+        except Exception:
+            continue
+        if isinstance(data, str):
+            parts.append(data)
+    return "".join(parts)
+
+
 async def _mock_stream(user_msg: str) -> str:
     """离线演示：基于用户输入生成一段预设中文流式文本，分片用 SSE 推送。"""
     text = (
@@ -232,7 +254,7 @@ async def search(q: str = "", limit: int = 50):
 
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, stream: bool = True):
     model = req.model
     # 还原为内部使用的 dict 列表（已通过 Pydantic 校验，项为合法 {role, content}）
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
@@ -253,13 +275,15 @@ async def chat(req: ChatRequest):
                         db_store.set_title(sid, title)
                     break
 
+    # 提取用于 mock 的用户文本（非 mock 模式也复用）
+    user_text = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            user_text = m.get("content", "")
+            break
+
     async def event_gen():
         if MOCK_LLM:
-            user_text = ""
-            for m in reversed(messages):
-                if m.get("role") == "user":
-                    user_text = m.get("content", "")
-                    break
             async for chunk in _mock_stream(user_text):
                 yield chunk
         else:
@@ -268,6 +292,34 @@ async def chat(req: ChatRequest):
                 return
             async for chunk in _ollama_stream(model, messages):
                 yield chunk
+
+    # R1 新需求：非流式模式（stream=0/false）直接返回完整 JSON 回复，
+    # 便于程序化 / API 消费者（无需解析 SSE），复用同一套生成器。
+    if not stream:
+        if not MOCK_LLM and not model:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "请先选择或输入模型名称"},
+            )
+        if MOCK_LLM:
+            reply = await _collect_sse_text(_mock_stream(user_text))
+        else:
+            parts = []
+            async for evt in _ollama_stream(model, messages):
+                if evt.startswith("event: error"):
+                    data = evt.split("data: ", 1)[1].strip()
+                    try:
+                        err = json.loads(data)
+                    except Exception:
+                        err = data
+                    return JSONResponse(status_code=502, content={"error": err})
+                data = evt.split("data: ", 1)[1].strip()
+                try:
+                    parts.append(json.loads(data))
+                except Exception:
+                    pass
+            reply = "".join(parts)
+        return {"reply": reply, "ok": True, "model": model or "mock"}
 
     return StreamingResponse(
         event_gen(),

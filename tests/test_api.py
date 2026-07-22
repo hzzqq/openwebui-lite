@@ -361,3 +361,52 @@ def test_models_endpoint_is_cached():
     assert r.status_code == 200
     # 调用后缓存应被填充，且内容与响应一致
     assert main._MODELS_CACHE["data"] == r.json()["models"]
+
+
+def test_chat_non_streaming_returns_json():
+    """R1 新需求验证：?stream=0 返回完整 JSON 回复（非 SSE），便于 API 消费。"""
+    c = TestClient(main.app)
+    c.post("/api/new")
+    r = c.post(
+        "/api/chat?stream=0",
+        json={"model": "mock", "messages": [{"role": "user", "content": "非流式你好"}]},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert isinstance(data["reply"], str) and len(data["reply"]) > 0
+    assert "非流式你好" in data["reply"]  # 回显用户输入
+    assert data["model"] == "mock"
+
+
+def test_search_escapes_like_wildcards():
+    """R2 隐性正确性：搜索词中的 % / _ 应被当字面量，而非 LIKE 通配符。"""
+    import urllib.parse
+
+    c = TestClient(main.app)
+    c.post("/api/new")
+    # 下划线：字面 user_name 应命中，username（无下划线）不应被 _ 通配命中
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [
+            {"role": "user", "content": "user_name 应被字面匹配"},
+            {"role": "user", "content": "username 不应被下划线通配命中"},
+        ]},
+    )
+    r = c.get("/api/search?q=" + urllib.parse.quote("user_name"))
+    contents = [x["content"] for x in r.json()["results"]]
+    assert any("user_name" in x for x in contents)
+    assert not any("username" in x for x in contents)
+
+    # 百分号：字面 50% 应命中，5000 不应被 % 通配命中
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [
+            {"role": "user", "content": "折扣 50% off"},
+            {"role": "user", "content": "价格 5000 元"},
+        ]},
+    )
+    r2 = c.get("/api/search?q=" + urllib.parse.quote("50%"))
+    contents2 = [x["content"] for x in r2.json()["results"]]
+    assert any("50% off" in x for x in contents2)
+    assert not any("5000" in x for x in contents2)
