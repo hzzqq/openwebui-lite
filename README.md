@@ -79,3 +79,10 @@ openwebui-lite/
 - 前端增强：**停止生成**（AbortController 中断流式）、**自动标题**（取首条消息）、生成中状态指示
 - 保留 `MOCK_LLM=1` 离线演示模式（无需 Ollama 即可体验完整 UI 与流式）
 - 附 `run.sh` / `run.bat` 一键启动（默认 MOCK 演示）
+
+## 依赖与降级
+
+- 运行时依赖见 `requirements.txt`（FastAPI + 本地 LLM 客户端）。
+- 需本地运行 **Ollama** 等服务并暴露接口；服务未启动或连接失败时，API 返回明确错误体与非零状态码，前端提示连接异常，不静默挂死。
+- 测试从仓库内运行：`cd openwebui-lite && python -m pytest tests -q`（在父目录运行会因 `ModuleNotFoundError` 失败）。开发依赖见 `requirements-dev.txt`。
+
