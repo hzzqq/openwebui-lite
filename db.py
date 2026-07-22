@@ -264,6 +264,32 @@ def count_messages(sid: str) -> int:
     return row[0] if row else 0
 
 
+def count_messages_filtered(sid: str, role: "str | None" = None, q: "str | None" = None) -> int:
+    """统计某会话在给定 role / q 过滤条件下的消息总数（忽略分页）。
+
+    R1 新能力：供 /api/sessions/{sid}/messages 返回 `total` 字段，使分页 UI 能
+    算出「共多少页」，而无需再发一次无 limit 的请求自行统计。
+
+    R2 一致性：role / q 的过滤口径与 get_messages 完全一致（role 直接相等、
+    q 同样先转义 LIKE 通配符），保证 `total` 与当页 `count` 基于同一筛选条件。
+    """
+    params: list = [sid]
+    sql = "SELECT COUNT(*) FROM messages WHERE session_id=?"
+    if role:
+        sql += " AND role=?"
+        params.append(role)
+    if q:
+        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        sql += " AND content LIKE ? ESCAPE '\\'"
+        params.append(f"%{escaped}%")
+    conn = _conn()
+    try:
+        n = conn.execute(sql, params).fetchone()[0]
+    finally:
+        conn.close()
+    return n
+
+
 def set_title(sid: str, title: str) -> None:
     conn = _conn()
     try:

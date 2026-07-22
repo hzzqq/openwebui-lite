@@ -684,6 +684,46 @@ def test_session_messages_role_filter():
     assert rbad.json()["count"] == 3
 
 
+def test_session_messages_returns_total_for_pagination():
+    """R1 验证：/api/sessions/{sid}/messages 返回 total（忽略分页的过滤总数）。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    c.post("/api/chat", json={"model": "mock", "messages": [
+        {"role": "user", "content": "TOTAL_Q1"},
+        {"role": "assistant", "content": "TOTAL_A1"},
+        {"role": "user", "content": "TOTAL_Q2"},
+        {"role": "assistant", "content": "TOTAL_A2"},
+    ]})
+    r = c.get(f"/api/sessions/{sid}/messages?limit=2&offset=0")
+    body = r.json()
+    assert body["total"] == 4          # 过滤后共 4 条
+    assert body["count"] == 2         # 当页 2 条
+    # role 过滤下 total 也随之收窄
+    ru = c.get(f"/api/sessions/{sid}/messages?role=user")
+    assert ru.json()["total"] == 2
+
+
+def test_title_rederives_after_clear():
+    """R2 修复验证：会话清空后（标题回到哨兵「新对话」），再开聊应能
+    根据首条用户消息重新派生真实标题，而不是卡在「新对话」。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    c.post("/api/chat", json={"model": "mock", "messages": [
+        {"role": "user", "content": "原始标题来源内容"},
+    ]})
+    assert "原始标题来源内容" in main.db_store.get_title(sid)
+    # 清空会话（标题重置为哨兵「新对话」）
+    c.post(f"/api/sessions/{sid}/clear")
+    assert main.db_store.get_title(sid) == "新对话"
+    # 再发送一条新用户消息，标题应重新派生而非停留「新对话」
+    c.post("/api/chat", json={"model": "mock", "messages": [
+        {"role": "user", "content": "重新派生标题内容"},
+    ]})
+    new_title = main.db_store.get_title(sid)
+    assert new_title != "新对话"
+    assert "重新派生标题内容" in new_title
+
+
 def test_sessions_cleanup_keeps_recent_and_current():
     """R1 验证：批量清理只删最旧的、保留最近 keep 个，且当前会话永不被删。
     对「运行内已有其他会话」做鲁棒处理：用清理前后差值而非绝对计数。"""

@@ -300,8 +300,13 @@ async def chat(req: ChatRequest, stream: bool = True):
     # 每次前端传完整历史，整体落盘
     if messages:
         db_store.save_messages(sid, messages)
-        # 自动标题：首条用户消息 -> 会话标题（可观测性 + 多会话可读性）
-        if not db_store.get_title(sid):
+        # 自动标题：首条用户消息 -> 会话标题（可观测性 + 多会话可读性）。
+        # R2 修复（隐性状态缺陷）：清空会话后标题会被重置为哨兵值「新对话」
+        # （见 clear_messages），而旧逻辑只在「标题为空」时才推导——哨兵值
+        # 非空，导致清空后再开聊标题卡在「新对话」、无法重新派生。现把哨兵值
+        # 也视为「需要重新派生」，清空后即可随首条用户消息更新真实标题。
+        existing_title = db_store.get_title(sid)
+        if not existing_title or existing_title == "新对话":
             for m in messages:
                 if m.get("role") == "user" and m.get("content"):
                     title = m["content"].strip().replace("\n", " ")[:40]
@@ -494,8 +499,11 @@ async def session_messages_ep(sid: str, limit: int = 0, offset: int = 0, role: s
     msgs = db_store.get_messages(
         sid, limit=limit, offset=max(0, offset), role=role_filter, q=q_filter
     )
+    # R1 新能力：返回 total（忽略分页的过滤后总数），便于分页 UI 计算页数，
+    # 无需再发一次无 limit 请求自行统计。count 为当页实际条数。
+    total = db_store.count_messages_filtered(sid, role=role_filter, q=q_filter)
     return {"ok": True, "id": sid, "messages": msgs,
-            "count": len(msgs), "limit": limit, "offset": max(0, offset),
+            "count": len(msgs), "total": total, "limit": limit, "offset": max(0, offset),
             "role": role_filter, "q": q_filter}
 
 
