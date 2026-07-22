@@ -114,13 +114,16 @@ def ensure_session(sid: str) -> None:
 
 
 def get_messages(
-    sid: str, limit: "int | None" = None, offset: int = 0, role: "str | None" = None
+    sid: str, limit: "int | None" = None, offset: int = 0, role: "str | None" = None,
+    q: "str | None" = None,
 ) -> list[dict]:
     """返回某会话的消息列表（按 id 升序）。
 
     limit/offset 用于分页：超大会话无需一次性全部载入（隐性性能/内存隐患）。
     limit 为 None 或 <=0 表示不限制。
     role：可选过滤（"user" / "assistant"），None 表示不过滤。
+    q：可选内容子串检索（LIKE，已转义 %/_ 通配符，按字面量匹配），便于在
+    单个会话内快速定位某条消息（与全局 /api/search 互补——一个会话内、一个跨会话）。
 
     R2 修复（一致性/可观测性）：原实现只返回 {role, content}，缺少每条消息的
     id，导致前端通过分页接口拿到消息后无法定位/编辑/删除具体某条（只能再走
@@ -131,6 +134,12 @@ def get_messages(
     if role:
         sql += " AND role=?"
         params.append(role)
+    if q:
+        # R2 与 search_messages 一致：先转义 LIKE 通配符，避免搜索词里的
+        # 「%」「_」被当成模式导致误命中/漏命中（如「50%」「user_name」）。
+        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        sql += " AND content LIKE ? ESCAPE '\\'"
+        params.append(f"%{escaped}%")
     sql += " ORDER BY id"
     if limit and limit > 0:
         sql += " LIMIT ? OFFSET ?"

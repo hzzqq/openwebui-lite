@@ -689,3 +689,46 @@ def test_chat_nonstream_ollama_no_crash_on_done_event(monkeypatch):
     data = r.json()
     assert data["ok"] is True
     assert data["reply"] == "你好世界"
+
+
+def test_session_messages_search():
+    """R1：会话内消息支持 q 子串检索（LIKE 转义），仅返回命中内容。
+
+    注意：openwebui 每次 chat 都会以「完整历史」覆盖式保存会话消息，
+    因此本测试在单次 chat 中携带全部消息（模拟前端每次发送完整对话）。
+    """
+    c = TestClient(main.app)
+    r = c.post("/api/new")
+    sid = r.json()["session_id"]
+    # 一次 chat 携带完整历史（含苹果 / 天气两条 user 消息）
+    c.post("/api/chat", json={"model": "mock", "messages": [
+        {"role": "user", "content": "苹果公司发布了新产品"},
+        {"role": "assistant", "content": "已记录该消息"},
+        {"role": "user", "content": "今天天气晴朗"},
+    ]})
+
+    r1 = c.get(f"/api/sessions/{sid}/messages", params={"q": "苹果"})
+    assert r1.status_code == 200
+    m1 = r1.json()["messages"]
+    assert len(m1) >= 1
+    assert all("苹果" in (m["content"] or "") for m in m1)
+    assert r1.json()["q"] == "苹果"
+
+    r2 = c.get(f"/api/sessions/{sid}/messages", params={"q": "天气"})
+    m2 = r2.json()["messages"]
+    assert all("天气" in (m["content"] or "") for m in m2)
+
+
+def test_session_messages_search_escapes_wildcard():
+    """R2：q 中的 LIKE 通配符 %/_ 按字面量匹配，不会误命中。"""
+    c = TestClient(main.app)
+    r = c.post("/api/new")
+    sid = r.json()["session_id"]
+    c.post("/api/chat", json={"model": "mock", "messages": [
+        {"role": "user", "content": "完成度 50% 的进度"},
+    ]})
+    # 搜索字面量 "50%"：若未转义，% 会被当成通配符导致误命中任意消息
+    r1 = c.get(f"/api/sessions/{sid}/messages", params={"q": "50%"})
+    assert r1.status_code == 200
+    assert len(r1.json()["messages"]) == 1
+    assert "50%" in r1.json()["messages"][0]["content"]
