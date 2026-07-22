@@ -170,6 +170,19 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+
+// 触发浏览器下载一段文本为文件（用于会话导出等）
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 const messagesEl = $("messages");
 const emptyEl = $("empty");
 const inputEl = $("input");
@@ -407,8 +420,21 @@ async function loadSessions() {
         if (s.id === current) newChat();
         loadSessions();
       });
+      const exp = document.createElement("button");
+      exp.className = "del";
+      exp.textContent = "⭳";
+      exp.title = "导出会话为 Markdown";
+      exp.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        try {
+          const r = await fetch("/api/sessions/" + s.id + "/export");
+          const data = await r.json();
+          downloadText((data.title || "session") + ".md", data.markdown || "");
+        } catch (e) {}
+      });
       item.appendChild(title);
       item.appendChild(meta);
+      item.appendChild(exp);
       item.appendChild(del);
       item.addEventListener("click", () => switchSession(s.id));
       listEl.appendChild(item);

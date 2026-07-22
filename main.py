@@ -288,6 +288,21 @@ async def clear_session_ep(sid: str):
     return {"ok": True, "id": sid, "title": "新对话"}
 
 
+@app.get("/api/sessions/{sid}/export")
+async def export_session_ep(sid: str):
+    """将会话导出为 Markdown 文本（便于存档 / 分享），原样返回消息流转。"""
+    msgs = db_store.get_messages(sid)
+    title = db_store.get_title(sid) or "对话记录"
+    lines = [f"# {title}", ""]
+    for m in msgs:
+        role = m.get("role", "")
+        label = "用户" if role == "user" else ("助手" if role == "assistant" else role)
+        lines.append(f"**{label}：**")
+        lines.append(m.get("content", ""))
+        lines.append("")
+    return {"ok": True, "id": sid, "title": title, "markdown": "\n".join(lines)}
+
+
 @app.get("/api/history")
 async def history():
     sess = _load_session()

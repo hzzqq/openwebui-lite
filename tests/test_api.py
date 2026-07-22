@@ -199,6 +199,21 @@ def test_clear_session_keeps_session_but_wipes_messages():
     assert main.db_store.count_messages(sid) == 0
 
 
+def test_export_session_returns_markdown():
+    """R1 新需求验证：GET /api/sessions/{sid}/export 返回 Markdown 会话记录。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "导出测试问题"}]},
+    )
+    r = c.get(f"/api/sessions/{sid}/export")
+    assert r.status_code == 200
+    md = r.json()["markdown"]
+    assert "导出测试问题" in md
+    assert md.startswith("#")
+
+
 def test_chat_rejects_malformed_messages():
     """R2 隐性健壮性：messages 非法（非 {role,content}）应被校验拒绝，而非 500。"""
     c = TestClient(main.app)
