@@ -21,8 +21,9 @@ import time
 from typing import Dict, List
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 import db as db_store  # SQLite 会话持久化
 
@@ -133,6 +134,12 @@ async def index():
     return HTMLResponse("<h1>static/index.html 未找到</h1>", status_code=404)
 
 
+class ChatRequest(BaseModel):
+    """聊天请求体（输入校验，避免裸 JSON 解析导致 500）。"""
+    model: str = ""
+    messages: List[Dict] = Field(default_factory=list)
+
+
 @app.get("/api/models")
 async def models():
     return {"models": await _fetch_models(), "mock": MOCK_LLM}
@@ -158,10 +165,9 @@ async def health():
 
 
 @app.post("/api/chat")
-async def chat(request: Request):
-    body = await request.json()
-    model = body.get("model", "")
-    messages = body.get("messages", [])
+async def chat(req: ChatRequest):
+    model = req.model
+    messages = req.messages
 
     sid = _current_sid()
     if model:
@@ -195,6 +201,26 @@ async def chat(request: Request):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/api/sessions")
+async def list_sessions_ep():
+    """多会话管理：列出全部会话及当前会话 id。"""
+    return {"sessions": db_store.list_sessions(), "current": _current_sid()}
+
+
+@app.post("/api/sessions/{sid}/switch")
+async def switch_session_ep(sid: str):
+    """切换到指定会话（用于「打开历史会话」）。"""
+    db_store.switch_session(sid)
+    return {"ok": True, "session_id": sid}
+
+
+@app.delete("/api/sessions/{sid}")
+async def delete_session_ep(sid: str):
+    """删除指定会话（避免旧会话无限堆积）。"""
+    db_store.delete_session(sid)
+    return {"ok": True, "session_id": sid}
 
 
 @app.get("/api/history")

@@ -66,3 +66,42 @@ def test_health_endpoint():
     assert data["status"] in ("ok", "degraded")
     assert "ollama_base" in data
     assert data["db"] is True  # WAL 后 SQLite 可读
+
+
+def test_list_sessions_returns_current():
+    c = TestClient(main.app)
+    c.post("/api/new")  # 至少有一个当前会话
+    r = c.get("/api/sessions")
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data["sessions"], list)
+    assert len(data["sessions"]) >= 1
+    assert data["current"]
+    # 每个会话项含消息数等可观测字段
+    sess = data["sessions"][0]
+    assert "message_count" in sess and "id" in sess
+
+
+def test_switch_session_restores_history():
+    c = TestClient(main.app)
+    first = c.post("/api/new").json()["session_id"]
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "FIRST_MSG"}]},
+    )
+    c.post("/api/new")  # 切到新会话，离开 first
+    c.post(f"/api/sessions/{first}/switch")  # 切回 first
+    h = c.get("/api/history").json()
+    assert any("FIRST_MSG" in (m.get("content") or "") for m in h.get("messages", []))
+    assert c.get("/api/sessions").json()["current"] == first
+
+
+def test_delete_session_removes_it():
+    c = TestClient(main.app)
+    c.post("/api/new")  # 当前 A
+    other = c.post("/api/new").json()["session_id"]  # 当前切到 B
+    assert other
+    r = c.delete(f"/api/sessions/{other}")
+    assert r.status_code == 200
+    ids = [s["id"] for s in c.get("/api/sessions").json()["sessions"]]
+    assert other not in ids

@@ -152,3 +152,59 @@ def new_session() -> str:
     ensure_session(sid)
     set_current_sid(sid)
     return sid
+
+
+def count_messages(sid: str) -> int:
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id=?", (sid,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else 0
+
+
+def list_sessions() -> list[dict]:
+    """列出全部会话（含消息数），用于多会话管理 UI。
+
+    按建立时间倒序，最近的在前。
+    """
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, model, created FROM sessions ORDER BY created DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for sid, model, created in rows:
+        out.append(
+            {
+                "id": sid,
+                "model": model,
+                "created": created,
+                "message_count": count_messages(sid),
+            }
+        )
+    return out
+
+
+def switch_session(sid: str) -> str:
+    """切换当前会话指针到指定 sid（不存在则先 ensure）。"""
+    ensure_session(sid)
+    set_current_sid(sid)
+    return sid
+
+
+def delete_session(sid: str) -> None:
+    """删除会话及其全部消息；若删的是当前会话，自动重建一个干净当前会话。"""
+    conn = _conn()
+    try:
+        conn.execute("DELETE FROM messages WHERE session_id=?", (sid,))
+        conn.execute("DELETE FROM sessions WHERE id=?", (sid,))
+        conn.commit()
+    finally:
+        conn.close()
+    if get_current_sid() == sid:
+        new_session()  # 避免 current 指针悬空
