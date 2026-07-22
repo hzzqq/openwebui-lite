@@ -95,6 +95,32 @@
   .composer textarea:focus { border-color: var(--accent); }
   .empty { text-align: center; color: var(--muted); margin-top: 12vh; }
   .empty h2 { font-weight: 500; margin-bottom: 8px; }
+
+  .layout { display: flex; flex: 1; min-height: 0; }
+  #sidebar {
+    width: 248px; flex: 0 0 248px; border-right: 1px solid var(--border);
+    background: var(--panel); display: flex; flex-direction: column; min-height: 0;
+  }
+  .sidebar-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px; border-bottom: 1px solid var(--border);
+    font-size: 13px; color: var(--muted);
+  }
+  .sidebar-head button { padding: 5px 10px; font-size: 12px; }
+  .session-list { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .session-item {
+    display: flex; align-items: center; gap: 8px; padding: 9px 10px;
+    border-radius: 8px; border: 1px solid transparent; cursor: pointer; background: var(--panel-2);
+  }
+  .session-item:hover { border-color: var(--border); }
+  .session-item.active { border-color: var(--accent); background: #20263a; }
+  .session-item .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .session-item .meta { font-size: 11px; color: var(--muted); }
+  .session-item .del { color: var(--danger); border: none; background: transparent; padding: 4px 6px; font-size: 14px; }
+  .session-empty { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 8px; }
+  @media (max-width: 720px) {
+    #sidebar { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -112,14 +138,26 @@
     <button id="newBtn" class="ghost" title="新对话">新对话</button>
   </header>
 
-  <main id="main">
-    <div class="messages" id="messages">
-      <div class="empty" id="empty">
-        <h2>开始你的第一段对话</h2>
-        <div>在下方输入消息，或先用右上角选择本地模型。无 Ollama 时可用 MOCK 模式演示。</div>
+  <div class="layout">
+    <aside id="sidebar">
+      <div class="sidebar-head">
+        <span>会话列表</span>
+        <button id="newBtn2" class="ghost" title="新对话">+ 新对话</button>
       </div>
-    </div>
-  </main>
+      <div class="session-list" id="sessionList">
+        <div class="session-empty">加载中…</div>
+      </div>
+    </aside>
+
+    <main id="main">
+      <div class="messages" id="messages">
+        <div class="empty" id="empty">
+          <h2>开始你的第一段对话</h2>
+          <div>在下方输入消息，或先用右上角选择本地模型。无 Ollama 时可用 MOCK 模式演示。</div>
+        </div>
+      </div>
+    </main>
+  </div>
 
   <footer>
     <div class="composer">
@@ -328,12 +366,93 @@ async function newChat() {
   messagesEl.appendChild(e);
   const ne = $("empty");
   if (ne) ne.style.display = "";
+  loadSessions(); // 同步侧边栏当前会话高亮
+}
+
+// ---- 多会话管理（让后端 /api/sessions 能力在界面可用）----
+async function loadSessions() {
+  const listEl = $("sessionList");
+  if (!listEl) return;
+  try {
+    const resp = await fetch("/api/sessions");
+    const data = await resp.json();
+    const sessions = data.sessions || [];
+    const current = data.current;
+    if (!sessions.length) {
+      listEl.innerHTML = '<div class="session-empty">暂无历史会话</div>';
+      return;
+    }
+    listEl.innerHTML = "";
+    for (const s of sessions) {
+      const item = document.createElement("div");
+      item.className = "session-item" + (s.id === current ? " active" : "");
+      const title = document.createElement("div");
+      title.className = "title";
+      title.textContent = s.title || "（未命名会话）";
+      title.title = s.title || "（未命名会话）";
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = `${s.message_count} 条`;
+      const del = document.createElement("button");
+      del.className = "del";
+      del.textContent = "×";
+      del.title = "删除会话";
+      del.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        if (!confirm("确定删除该会话？")) return;
+        try {
+          await fetch("/api/sessions/" + s.id, { method: "DELETE" });
+        } catch (e) {}
+        if (s.id === current) newChat();
+        loadSessions();
+      });
+      item.appendChild(title);
+      item.appendChild(meta);
+      item.appendChild(del);
+      item.addEventListener("click", () => switchSession(s.id));
+      listEl.appendChild(item);
+    }
+  } catch (e) {
+    listEl.innerHTML = '<div class="session-empty">会话加载失败</div>';
+  }
+}
+
+async function switchSession(id) {
+  if (streaming) return;
+  try {
+    await fetch("/api/sessions/" + id + "/switch", { method: "POST" });
+  } catch (e) {}
+  loadSessions();
+  // 重新加载该会话的消息到对话区
+  try {
+    const resp = await fetch("/api/history");
+    const data = await resp.json();
+    const msgs = data.messages || [];
+    conversation = [];
+    messagesEl.innerHTML = "";
+    if (!msgs.length) {
+      const e = document.createElement("div");
+      e.className = "empty"; e.id = "empty";
+      e.innerHTML = "<h2>开始你的第一段对话</h2><div>在下方输入消息开始。</div>";
+      messagesEl.appendChild(e);
+    } else {
+      if (emptyEl) emptyEl.style.display = "none";
+      for (const m of msgs) {
+        addMessage(m.role, m.content || "");
+        conversation.push({ role: m.role, content: m.content || "" });
+      }
+    }
+    const firstUser = msgs.find((m) => m.role === "user");
+    if (firstUser) updateTitle(firstUser.content);
+    if (data.model) setModelName(data.model);
+  } catch (e) {}
 }
 
 // 事件绑定
 $("sendBtn").addEventListener("click", send);
 $("stopBtn").addEventListener("click", stopGen);
 $("newBtn").addEventListener("click", newChat);
+$("newBtn2").addEventListener("click", newChat);
 inputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
@@ -363,6 +482,7 @@ async function loadHistory() {
 
 loadModels();
 loadHistory();
+loadSessions();
 </script>
 </body>
 </html>
