@@ -134,6 +134,7 @@
     <select id="modelSelect" title="选择模型">
       <option value="">加载模型中…</option>
     </select>
+    <button id="saveDefaultBtn" class="ghost" title="把当前模型设为默认（重启后自动选中）">★ 默认</button>
     <span id="status">连接中</span>
     <button id="newBtn" class="ghost" title="新对话">新对话</button>
   </header>
@@ -453,6 +454,7 @@ $("sendBtn").addEventListener("click", send);
 $("stopBtn").addEventListener("click", stopGen);
 $("newBtn").addEventListener("click", newChat);
 $("newBtn2").addEventListener("click", newChat);
+$("saveDefaultBtn").addEventListener("click", saveDefaultModel);
 inputEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
@@ -460,6 +462,32 @@ inputEl.addEventListener("input", () => {
   inputEl.style.height = "auto";
   inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + "px";
 });
+
+// 默认模型记忆：把当前选择持久化到后端 /api/settings
+async function saveDefaultModel() {
+  const m = getModel();
+  if (!m) { alert("请先选择或输入一个模型名称"); return; }
+  try {
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ default_model: m }),
+    });
+    statusEl.textContent = "已保存默认模型：" + m;
+    setTimeout(() => { if (savedStatus) { statusEl.textContent = savedStatus.text; statusEl.className = savedStatus.cls; } }, 1500);
+  } catch (e) {
+    statusEl.textContent = "保存默认模型失败";
+  }
+}
+
+// 页面加载时恢复已持久化的「默认模型」（让后端默认模型记忆在 UI 可见）
+async function loadSettings() {
+  try {
+    const resp = await fetch("/api/settings");
+    const data = await resp.json();
+    if (data.default_model) setModelName(data.default_model);
+  } catch (e) { /* 设置加载失败不阻断主流程 */ }
+}
 
 // 页面加载时恢复已持久化的历史（打通「重启保留」承诺）
 async function loadHistory() {
@@ -482,6 +510,7 @@ async function loadHistory() {
 
 loadModels();
 loadHistory();
+loadSettings();
 loadSessions();
 </script>
 </body>

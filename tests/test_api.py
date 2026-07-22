@@ -159,3 +159,12 @@ def test_chat_persists_default_model():
         json={"model": "my-model", "messages": [{"role": "user", "content": "x"}]},
     )
     assert c.get("/api/settings").json()["default_model"] == "my-model"
+
+
+def test_frontend_wires_settings():
+    """R1 新需求验证：前端应接入默认模型记忆（/api/settings + 保存按钮）。"""
+    html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    assert "/api/settings" in html
+    assert "saveDefaultBtn" in html
+    assert "loadSettings" in html
+    assert "saveDefaultModel" in html
