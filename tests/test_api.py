@@ -732,3 +732,88 @@ def test_session_messages_search_escapes_wildcard():
     assert r1.status_code == 200
     assert len(r1.json()["messages"]) == 1
     assert "50%" in r1.json()["messages"][0]["content"]
+
+
+def test_chat_rejects_invalid_role():
+    """R1 验证：role 收口为枚举后，畸形 role(如 'bot')应在边界 422 而非静默落库。"""
+    c = TestClient(main.app)
+    c.post("/api/new")
+    r = c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "bot", "content": "你好"}]},
+    )
+    assert r.status_code == 422
+    # 合法枚举仍正常
+    r2 = c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "合法角色"}]},
+    )
+    assert r2.status_code == 200
+
+
+def test_chat_passes_generation_params(monkeypatch):
+    """R1 验证：temperature/max_tokens 经 ChatRequest 透传到 Ollama options 载荷。"""
+    import json as _json
+
+    c = TestClient(main.app)
+    c.post("/api/new")
+
+    captured = {}
+
+    async def fake_ollama(model, messages, temperature=None, max_tokens=None):
+        captured["options"] = {"temperature": temperature, "max_tokens": max_tokens}
+        yield main._sse("token", _json.dumps("ok", ensure_ascii=False))
+        yield main._sse("done", _json.dumps({"ok": True}, ensure_ascii=False))
+
+    monkeypatch.setattr(main, "MOCK_LLM", False)
+    monkeypatch.setattr(main, "_ollama_stream", fake_ollama)
+    r = c.post(
+        "/api/chat?stream=0",
+        json={
+            "model": "x",
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.7,
+            "max_tokens": 256,
+        },
+    )
+    assert r.status_code == 200
+    assert captured["options"]["temperature"] == 0.7
+    assert captured["options"]["max_tokens"] == 256
+
+
+def test_chat_omits_default_generation_params(monkeypatch):
+    """R1 验证：未传生成参数时，不向 Ollama 注入空 options（沿用模型默认）。"""
+    import json as _json
+
+    c = TestClient(main.app)
+    c.post("/api/new")
+
+    captured = {}
+
+    async def fake_ollama(model, messages, temperature=None, max_tokens=None):
+        captured["payload_has_options"] = temperature is not None or max_tokens is not None
+        yield main._sse("token", _json.dumps("ok", ensure_ascii=False))
+        yield main._sse("done", _json.dumps({"ok": True}, ensure_ascii=False))
+
+    monkeypatch.setattr(main, "MOCK_LLM", False)
+    monkeypatch.setattr(main, "_ollama_stream", fake_ollama)
+    r = c.post(
+        "/api/chat?stream=0",
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200
+    assert captured["payload_has_options"] is False
+
+
+def test_save_messages_caps_content():
+    """R2 验证：save_messages 与 update_message 一致，content 超 100000 截断。"""
+    import db as db_store
+
+    sid = db_store.new_session()
+    huge = "A" * 250000
+    db_store.save_messages(sid, [{"role": "user", "content": huge}])
+    stored = db_store.get_messages(sid)[0]["content"]
+    assert len(stored) == 100000
+    # 正常长度不受影响
+    db_store.save_messages(sid, [{"role": "user", "content": "短内容"}])
+    assert db_store.get_messages(sid)[0]["content"] == "短内容"

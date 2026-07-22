@@ -18,7 +18,7 @@ OpenWebUI Lite — 对接本地 Ollama 的轻量 LLM 聊天前端 MVP
 import json
 import os
 import time
-from typing import Dict, List
+from typing import Dict, List, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -135,9 +135,20 @@ async def _mock_stream(user_msg: str) -> str:
     yield _sse("done", json.dumps({"ok": True}, ensure_ascii=False))
 
 
-async def _ollama_stream(model: str, messages: List[Dict]) -> str:
-    """转发到 Ollama /api/chat（stream=true），增量 token 推给前端。"""
+async def _ollama_stream(model: str, messages: List[Dict], temperature=None, max_tokens=None) -> str:
+    """转发到 Ollama /api/chat（stream=true），增量 token 推给前端。
+
+    R1 新能力：temperature / max_tokens 经 options 透传给 Ollama，
+    让用户/调用方控制生成温度与长度（仅当显式传入时附加，避免覆盖模型默认）。
+    """
     payload = {"model": model, "messages": messages, "stream": True}
+    options = {}
+    if temperature is not None:
+        options["temperature"] = temperature
+    if max_tokens is not None:
+        options["max_tokens"] = max_tokens
+    if options:
+        payload["options"] = options
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             async with client.stream(
@@ -174,7 +185,9 @@ async def index():
 
 class MessageItem(BaseModel):
     """单条消息（输入校验，避免裸 dict 导致保存时 AttributeError 500）。"""
-    role: str
+    # R1 新能力：role 收口为合法枚举，畸形 role（如 "bot"）在边界即 422，
+    # 不再被静默落库（R2 隐性一致性：此前任何字符串都能存，下游统计/渲染易错）。
+    role: Literal["system", "user", "assistant"]
     content: str = ""
 
 
@@ -182,6 +195,10 @@ class ChatRequest(BaseModel):
     """聊天请求体（输入校验，避免裸 JSON 解析导致 500）。"""
     model: str = ""
     messages: List[MessageItem] = Field(default_factory=list)
+    # R1 新能力：生成参数透传（与 CLI 侧 ask/chat 一致），便于控制温度/长度。
+    # 默认 None 表示沿用模型默认；经 _ollama_stream 透传到 Ollama options。
+    temperature: "float | None" = None
+    max_tokens: "int | None" = None
 
 
 class SettingsRequest(BaseModel):
@@ -302,7 +319,9 @@ async def chat(req: ChatRequest, stream: bool = True):
             if not model:
                 yield _sse("error", json.dumps("请先选择或输入模型名称", ensure_ascii=False))
                 return
-            async for chunk in _ollama_stream(model, messages):
+            async for chunk in _ollama_stream(
+                model, messages, temperature=req.temperature, max_tokens=req.max_tokens
+            ):
                 yield chunk
 
     # R1 新需求：非流式模式（stream=0/false）直接返回完整 JSON 回复，
@@ -317,7 +336,9 @@ async def chat(req: ChatRequest, stream: bool = True):
             reply = await _collect_sse_text(_mock_stream(user_text))
         else:
             parts = []
-            async for evt in _ollama_stream(model, messages):
+            async for evt in _ollama_stream(
+                model, messages, temperature=req.temperature, max_tokens=req.max_tokens
+            ):
                 if evt.startswith("event: error"):
                     data = evt.split("data: ", 1)[1].strip()
                     try:

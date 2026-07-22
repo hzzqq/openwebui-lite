@@ -153,14 +153,21 @@ def get_messages(
 
 
 def save_messages(sid: str, messages: list[dict]) -> None:
-    """整体替换该会话的消息（前端每次传完整历史）。"""
+    """整体替换该会话的消息（前端每次传完整历史）。
+
+    R2 修复（隐性口径不一致）：此前的落盘主路径（chat 每次覆盖式保存）对
+    content 没有任何长度上限，而 update_message（c54 单条编辑）却有
+    `[:100000]` 截断保护——两条写入路径口径不一致，超大首条消息得以撑爆
+    单元格、甚至拖慢后续读写。现统一按同一上限截断，保证一致性与稳健性。
+    """
     conn = _conn()
     try:
         conn.execute("DELETE FROM messages WHERE session_id=?", (sid,))
         for m in messages:
+            content = str(m.get("content", ""))[:100000]  # 与 update_message 一致
             conn.execute(
                 "INSERT INTO messages(session_id, role, content, ts) VALUES(?, ?, ?, ?)",
-                (sid, m.get("role", ""), m.get("content", ""), time.time()),
+                (sid, m.get("role", ""), content, time.time()),
             )
         conn.commit()
     finally:
