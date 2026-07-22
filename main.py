@@ -21,8 +21,8 @@ import time
 from typing import Dict, List
 
 import httpx
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 import db as db_store  # SQLite 会话持久化
@@ -347,6 +347,34 @@ async def session_messages_ep(sid: str, limit: int = 0, offset: int = 0):
     msgs = db_store.get_messages(sid, limit=limit, offset=max(0, offset))
     return {"ok": True, "id": sid, "messages": msgs,
             "count": len(msgs), "limit": limit, "offset": max(0, offset)}
+
+
+@app.get("/api/messages/{mid}")
+async def get_message_ep(mid: int):
+    """获取单条消息（按 id），便于前端定位/编辑某条历史消息。"""
+    conn = db_store._conn()
+    try:
+        row = conn.execute(
+            "SELECT session_id, role, content FROM messages WHERE id=?", (mid,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="message not found")
+    return {"id": mid, "session_id": row[0], "role": row[1], "content": row[2]}
+
+
+@app.delete("/api/messages/{mid}")
+async def delete_message_ep(mid: int):
+    """删除单条消息（区别于清空/删除整个会话）。
+
+    R2 修复：消息不存在时返回 404 而非静默成功；
+    删除后若会话已空，标题自动重置为「新对话」（一致性）。
+    """
+    res = db_store.delete_message(mid)
+    if res is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    return {"ok": True, **res}
 
 
 @app.get("/api/history")

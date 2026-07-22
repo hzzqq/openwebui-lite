@@ -240,6 +240,57 @@ def test_session_messages_pagination():
     assert r3.json()["count"] == 10
 
 
+def _first_mid(sid):
+    conn = main.db_store._conn()
+    try:
+        return conn.execute(
+            "SELECT id FROM messages WHERE session_id=? ORDER BY id LIMIT 1", (sid,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_delete_single_message_and_empty_title_reset():
+    """R1 新需求验证：DELETE /api/messages/{mid} 删除单条；
+    R2 修复：删空后标题应重置为「新对话」。"""
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    main.db_store.save_messages(
+        sid,
+        [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}],
+    )
+    mid = _first_mid(sid)
+    r = c.delete(f"/api/messages/{mid}")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert main.db_store.count_messages(sid) == 1  # 仅删一条
+
+    mid2 = _first_mid(sid)
+    r2 = c.delete(f"/api/messages/{mid2}")
+    assert r2.status_code == 200
+    assert main.db_store.count_messages(sid) == 0
+    assert main.db_store.get_title(sid) == "新对话"  # R2 一致性修复
+
+
+def test_delete_missing_message_returns_404():
+    c = TestClient(main.app)
+    r = c.delete("/api/messages/99999999")
+    assert r.status_code == 404
+
+
+def test_get_single_message():
+    """R1 新需求验证：GET /api/messages/{mid} 获取单条（供编辑定位）。"""
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    main.db_store.save_messages(sid, [{"role": "user", "content": "fetch me"}])
+    mid = _first_mid(sid)
+    r = c.get(f"/api/messages/{mid}")
+    assert r.status_code == 200
+    assert r.json()["content"] == "fetch me"
+    assert r.json()["session_id"] == sid
+
+
+
 def test_chat_rejects_malformed_messages():
     """R2 隐性健壮性：messages 非法（非 {role,content}）应被校验拒绝，而非 500。"""
     c = TestClient(main.app)

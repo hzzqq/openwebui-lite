@@ -270,14 +270,19 @@ def search_messages(q: str, limit: int = 50) -> list[dict]:
     """跨会话按内容模糊检索消息（LIKE 匹配），用于历史定位。
 
     返回 [{"session_id", "title", "role", "content"}, ...]，按插入顺序倒序。
+
+    R2 隐性正确性：用户搜索词若含 LIKE 通配符 `%` / `_`（如「50%」「user_name」），
+    原实现直接拼进 `%{q}%`，通配符会被当成模式，导致误命中/漏命中。
+    这里先转义（`\\` `%` `_`），再用 ESCAPE 子句声明转义符，使输入按字面量匹配。
     """
-    like = f"%{q}%"
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = f"%{escaped}%"
     conn = _conn()
     try:
         rows = conn.execute(
             "SELECT m.session_id, s.title, m.role, m.content "
             "FROM messages m LEFT JOIN sessions s ON s.id = m.session_id "
-            "WHERE m.content LIKE ? ORDER BY m.rowid DESC LIMIT ?",
+            "WHERE m.content LIKE ? ESCAPE '\\' ORDER BY m.id DESC LIMIT ?",
             (like, limit),
         ).fetchall()
     finally:
@@ -323,3 +328,38 @@ def clear_messages(sid: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def delete_message(mid: int) -> "dict | None":
+    """删除单条消息（区别于清空/删除整个会话）。
+
+    R1 新能力：支持逐条删除（如误发/错误回复）。
+    R2 修复（隐性一致性缺陷）：此前若用全量 save_messages 覆盖式保存，
+    单条删除后若该会话消息归零，会话标题仍停留在旧的自动标题，
+    造成「空会话却顶着一条历史标题」的错觉。这里在删除后检测会话
+    是否清空，是则把标题重置为「新对话」，与 clear_messages 行为一致。
+    消息不存在时返回 None，供端点返回 404（而非静默成功）。
+    """
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT session_id, role FROM messages WHERE id=?", (mid,)
+        ).fetchone()
+        if not row:
+            return None
+        sid, role = row
+        conn.execute("DELETE FROM messages WHERE id=?", (mid,))
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id=?", (sid,)
+        ).fetchone()[0]
+        title = ""
+        if cnt == 0:
+            conn.execute("UPDATE sessions SET title='新对话' WHERE id=?", (sid,))
+            conn.commit()
+            title = "新对话"
+        else:
+            conn.commit()
+    finally:
+        conn.close()
+    return {"id": mid, "session_id": sid, "role": role,
+            "message_count": cnt, "title": title}
