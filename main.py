@@ -459,7 +459,17 @@ async def history():
 @app.post("/api/clear")
 async def new_session():
     sid = db_store.new_session()
+    # R2 修复：新会话必须显式成为「当前会话」，否则 chat 仍写入旧会话指针，
+    # 导致多会话切换/历史恢复场景下消息落到错误会话（test_session_messages_pagination 失败根因）。
+    db_store.set_current_sid(sid)
     return {"ok": True, "session_id": sid}
+
+
+@app.get("/api/current")
+async def current_session_ep():
+    """R1 新需求：暴露当前会话指针，便于前端/脚本确认「正在与哪个会话对话」。"""
+    sid = _current_sid()
+    return {"session_id": sid}
 
 
 # ---------- 启动说明 ----------

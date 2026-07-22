@@ -440,3 +440,41 @@ def test_search_escapes_like_wildcards():
     contents2 = [x["content"] for x in r2.json()["results"]]
     assert any("50% off" in x for x in contents2)
     assert not any("5000" in x for x in contents2)
+
+
+def test_new_session_becomes_current():
+    """R2 验证：/api/new 之后，新会话必须成为当前会话（chat 写入它而非旧会话）。"""
+    import db as db_store
+
+    c = TestClient(main.app)
+    old = c.post("/api/new").json()["session_id"]
+    # 在旧会话写入内容
+    c.post("/api/chat", json={"model": "mock", "messages": [
+        {"role": "user", "content": "OLD_SESSION_MARKER"},
+    ]})
+    assert db_store.count_messages(old) == 1
+    # 开新会话
+    new_sid = c.post("/api/new").json()["session_id"]
+    assert new_sid != old
+    # 当前会话指针应已切到新会话
+    assert c.get("/api/current").json()["session_id"] == new_sid
+    # 新会话此刻为空
+    assert db_store.count_messages(new_sid) == 0
+    # 后续 chat 写入新会话，旧会话不受影响（仍为 1 条）
+    c.post("/api/chat", json={"model": "mock", "messages": [
+        {"role": "user", "content": "NEW_SESSION_MARKER"},
+    ]})
+    assert db_store.count_messages(new_sid) == 1
+    assert db_store.count_messages(old) == 1
+
+
+def test_session_messages_pagination_still_passes():
+    """回归：分页测试在新会话切换修复后应通过（此前 10 条断言得 4 条）。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    hist = []
+    for i in range(5):
+        hist.append({"role": "user", "content": f"问题{i}"})
+        hist.append({"role": "assistant", "content": f"回答{i}"})
+        c.post("/api/chat", json={"model": "mock", "messages": list(hist)})
+    assert main.db_store.count_messages(sid) == 10
