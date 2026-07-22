@@ -655,11 +655,14 @@ def test_sessions_cleanup_keeps_recent_and_current():
     r = c.post("/api/sessions/cleanup", params={"keep": 2})
     assert r.status_code == 200
     data = r.json()
-    assert data["removed"] == mid - 2
     after = db_store.list_sessions()
-    assert len(after) == 2
-    # 当前会话必须仍存在（不被清理删除）
-    assert cur in {s["id"] for s in after}
+    after_ids = {s["id"] for s in after}
+    # 当前会话必须仍存在（清理永不删除当前会话）
+    assert cur in after_ids
+    # 正常保留最近 keep=2；若当前会话因 created 同秒并列未进入「最近 2 个」，
+    # 会被额外保留为第 3 个（设计如此：当前指针永不被清理悬空）
+    assert len(after) in (2, 3)
+    assert data["removed"] == mid - len(after)
 
 
 def test_chat_nonstream_ollama_no_crash_on_done_event(monkeypatch):
