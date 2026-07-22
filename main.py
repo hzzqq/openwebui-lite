@@ -303,6 +303,15 @@ async def export_session_ep(sid: str):
     return {"ok": True, "id": sid, "title": title, "markdown": "\n".join(lines)}
 
 
+@app.get("/api/sessions/{sid}/messages")
+async def session_messages_ep(sid: str, limit: int = 0, offset: int = 0):
+    """分页返回会话消息（limit<=0 表示不限），便于超长会话按需加载。"""
+    limit = limit if limit and limit > 0 else None
+    msgs = db_store.get_messages(sid, limit=limit, offset=max(0, offset))
+    return {"ok": True, "id": sid, "messages": msgs,
+            "count": len(msgs), "limit": limit, "offset": max(0, offset)}
+
+
 @app.get("/api/history")
 async def history():
     sess = _load_session()

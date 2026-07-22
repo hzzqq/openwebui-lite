@@ -214,6 +214,32 @@ def test_export_session_returns_markdown():
     assert md.startswith("#")
 
 
+def test_session_messages_pagination():
+    """R1 新需求验证：GET /api/sessions/{sid}/messages 支持 limit/offset 分页。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    # 模拟前端逐步累积历史：每次发送完整历史（含助手回复）
+    hist = []
+    for i in range(5):
+        hist.append({"role": "user", "content": f"问题{i}"})
+        hist.append({"role": "assistant", "content": f"回答{i}"})
+        c.post("/api/chat", json={"model": "mock", "messages": list(hist)})
+    total = main.db_store.count_messages(sid)
+    assert total == 10  # 5 轮 × (用户+助手)
+    # 第一页：limit=2 -> 仅前 2 条（按 id 升序）
+    r1 = c.get(f"/api/sessions/{sid}/messages?limit=2&offset=0")
+    assert r1.status_code == 200
+    assert r1.json()["count"] == 2
+    assert "问题0" in r1.json()["messages"][0]["content"]
+    # 第二页：offset=2 -> 第 3、4 条
+    r2 = c.get(f"/api/sessions/{sid}/messages?limit=2&offset=2")
+    assert r2.json()["count"] == 2
+    assert "问题1" in r2.json()["messages"][0]["content"]
+    # 不限：返回全部
+    r3 = c.get(f"/api/sessions/{sid}/messages")
+    assert r3.json()["count"] == 10
+
+
 def test_chat_rejects_malformed_messages():
     """R2 隐性健壮性：messages 非法（非 {role,content}）应被校验拒绝，而非 500。"""
     c = TestClient(main.app)

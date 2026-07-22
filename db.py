@@ -108,12 +108,23 @@ def ensure_session(sid: str) -> None:
         conn.close()
 
 
-def get_messages(sid: str) -> list[dict]:
+def get_messages(sid: str, limit: "int | None" = None, offset: int = 0) -> list[dict]:
+    """返回某会话的消息列表（按 id 升序）。
+
+    limit/offset 用于分页：超大会话无需一次性全部载入（隐性性能/内存隐患）。
+    limit 为 None 或 <=0 表示不限制。
+    """
     conn = _conn()
     try:
-        rows = conn.execute(
-            "SELECT role, content FROM messages WHERE session_id=? ORDER BY id", (sid,)
-        ).fetchall()
+        if limit and limit > 0:
+            rows = conn.execute(
+                "SELECT role, content FROM messages WHERE session_id=? "
+                "ORDER BY id LIMIT ? OFFSET ?", (sid, limit, offset)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT role, content FROM messages WHERE session_id=? ORDER BY id", (sid,)
+            ).fetchall()
     finally:
         conn.close()
     return [{"role": r, "content": c} for r, c in rows]
