@@ -373,10 +373,17 @@ def get_stats() -> dict:
     return {"sessions": s_count, "messages": m_count}
 
 
-def search_messages(q: str, limit: int = 50) -> list[dict]:
+def search_messages(q: str, limit: int = 50, role: "str | None" = None) -> list[dict]:
     """跨会话按内容模糊检索消息（LIKE 匹配），用于历史定位。
 
-    返回 [{"session_id", "title", "role", "content"}, ...]，按插入顺序倒序。
+    返回 [{"id", "session_id", "title", "role", "content"}, ...]，按插入顺序倒序。
+
+    R1 新能力：role 过滤（"user" / "assistant"），与单会话消息列表的 role 过滤
+    对称，便于「只在助手回答里搜」或「只搜我的提问」这类场景；非法 role 忽略不报错。
+
+    R2 修复（隐性可观测性不一致）：原返回结构缺消息 id，而单会话消息列表
+    （get_messages）已带 id——导致全局检索结果无法被前端定位/跳转/编辑具体某条
+    （只能再走 /api/messages/{mid} 却无从得知 mid）。现补上 id，与单会话接口对齐。
 
     R2 隐性正确性：用户搜索词若含 LIKE 通配符 `%` / `_`（如「50%」「user_name」），
     原实现直接拼进 `%{q}%`，通配符会被当成模式，导致误命中/漏命中。
@@ -384,19 +391,25 @@ def search_messages(q: str, limit: int = 50) -> list[dict]:
     """
     escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     like = f"%{escaped}%"
+    sql = (
+        "SELECT m.id, m.session_id, s.title, m.role, m.content "
+        "FROM messages m LEFT JOIN sessions s ON s.id = m.session_id "
+        "WHERE m.content LIKE ? ESCAPE '\\'"
+    )
+    params: list = [like]
+    if role:
+        sql += " AND m.role=?"
+        params.append(role)
+    sql += " ORDER BY m.id DESC LIMIT ?"
+    params.append(limit)
     conn = _conn()
     try:
-        rows = conn.execute(
-            "SELECT m.session_id, s.title, m.role, m.content "
-            "FROM messages m LEFT JOIN sessions s ON s.id = m.session_id "
-            "WHERE m.content LIKE ? ESCAPE '\\' ORDER BY m.id DESC LIMIT ?",
-            (like, limit),
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     finally:
         conn.close()
     return [
-        {"session_id": sid, "title": title or "", "role": role, "content": content}
-        for sid, title, role, content in rows
+        {"id": mid, "session_id": sid, "title": title or "", "role": role_, "content": content}
+        for mid, sid, title, role_, content in rows
     ]
 
 

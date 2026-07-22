@@ -266,12 +266,17 @@ async def stats():
 
 
 @app.get("/api/search")
-async def search(q: str = "", limit: int = 50):
-    """跨会话全文检索消息（按内容模糊匹配），便于在历史中定位关键信息。"""
+async def search(q: str = "", limit: int = 50, role: str = ""):
+    """跨会话全文检索消息（按内容模糊匹配），便于在历史中定位关键信息。
+
+    R1 新能力：role 过滤（user / assistant）与单会话消息列表的 role 过滤对称；
+    非法 role 值忽略不过滤。返回结果含每条消息 id，便于前端跳转/编辑定位。
+    """
     if not q:
         return {"results": []}
     limit = max(1, min(int(limit), 200))  # 钳制上限，避免超大结果集拖垮响应
-    results = db_store.search_messages(q, limit=limit)
+    role_filter = role if role in ("user", "assistant") else None
+    results = db_store.search_messages(q, limit=limit, role=role_filter)
     return {"results": results}
 
 

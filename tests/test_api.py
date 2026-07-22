@@ -458,6 +458,57 @@ def test_search_empty_query_returns_empty():
     assert r.json()["results"] == []
 
 
+def test_search_results_include_id():
+    """R2 修复验证：全局检索结果应含消息 id，便于前端定位/跳转/编辑。"""
+    c = TestClient(main.app)
+    c.post("/api/new")
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "SEARCHABLE_ID_MARKER"}]},
+    )
+    results = c.get("/api/search?q=SEARCHABLE_ID_MARKER").json()["results"]
+    assert results
+    assert "id" in results[0] and isinstance(results[0]["id"], int)
+
+
+def test_search_role_filter_isolates_assistant():
+    """R1 验证：?role=assistant 只返回助手消息，与单会话 role 过滤对称。"""
+    c = TestClient(main.app)
+    c.post("/api/new")
+    # 发送一条 user 消息（mock 模式也只存前端传入的历史）
+    c.post(
+        "/api/chat",
+        json={
+            "model": "mock",
+            "messages": [
+                {"role": "user", "content": "ROLE_FILTER_KEYWORD"},
+                {"role": "assistant", "content": "ROLE_FILTER_KEYWORD 的回答"},
+            ],
+        },
+    )
+    all_hits = c.get("/api/search?q=ROLE_FILTER_KEYWORD").json()["results"]
+    assert all_hits  # 命中两条（user + assistant）
+    asst = c.get("/api/search?q=ROLE_FILTER_KEYWORD&role=assistant").json()["results"]
+    users = c.get("/api/search?q=ROLE_FILTER_KEYWORD&role=user").json()["results"]
+    assert asst and all(x["role"] == "assistant" for x in asst)
+    assert users and all(x["role"] == "user" for x in users)
+    # assistant 结果不应包含 user 那条，反之亦然
+    assert len(asst) < len(all_hits)
+
+
+def test_search_invalid_role_ignored():
+    """非法 role 值应被忽略（等价不过滤），不返回 400。"""
+    c = TestClient(main.app)
+    c.post("/api/new")
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "ROLE_IGNORE_KEYWORD"}]},
+    )
+    r = c.get("/api/search?q=ROLE_IGNORE_KEYWORD&role=bot")
+    assert r.status_code == 200
+    assert r.json()["results"]  # 仍按内容命中，未因非法 role 而清空
+
+
 def test_models_endpoint_is_cached():
     """R2 验证：/api/models 命中 5s TTL 缓存，避免重复打 Ollama。"""
     c = TestClient(main.app)
