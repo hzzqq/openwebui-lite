@@ -281,6 +281,13 @@ async def rename_session_ep(sid: str, req: RenameRequest):
     return {"ok": True, "id": sid, "title": title}
 
 
+@app.post("/api/sessions/{sid}/clear")
+async def clear_session_ep(sid: str):
+    """清空会话消息但保留会话本身（重置为新一轮对话）。"""
+    db_store.clear_messages(sid)
+    return {"ok": True, "id": sid, "title": "新对话"}
+
+
 @app.get("/api/history")
 async def history():
     sess = _load_session()

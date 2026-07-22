@@ -181,6 +181,24 @@ def test_rename_session_updates_title():
     assert got["title"] == "我的自定义标题"
 
 
+def test_clear_session_keeps_session_but_wipes_messages():
+    """R1 新需求验证：POST /api/sessions/{sid}/clear 清空消息且保留会话(标题重置)。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "临时对话内容"}]},
+    )
+    assert main.db_store.count_messages(sid) >= 1
+    r = c.post(f"/api/sessions/{sid}/clear")
+    assert r.status_code == 200
+    assert r.json()["title"] == "新对话"
+    # 会话仍存在，但消息已清空
+    ids = [s["id"] for s in c.get("/api/sessions").json()["sessions"]]
+    assert sid in ids
+    assert main.db_store.count_messages(sid) == 0
+
+
 def test_chat_rejects_malformed_messages():
     """R2 隐性健壮性：messages 非法（非 {role,content}）应被校验拒绝，而非 500。"""
     c = TestClient(main.app)

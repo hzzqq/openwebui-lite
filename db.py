@@ -253,3 +253,20 @@ def delete_session(sid: str) -> None:
         conn.close()
     if get_current_sid() == sid:
         new_session()  # 避免 current 指针悬空
+
+
+def clear_messages(sid: str) -> None:
+    """清空某会话的全部消息，但保留会话本身（标题重置为「新对话」）。
+
+    与 delete_session 的区别：删除会移除整个会话；清空只重置对话内容，
+    便于在不丢失会话列表/位置的前提下重新开始一轮新对话。
+    """
+    conn = _conn()
+    try:
+        conn.execute("DELETE FROM messages WHERE session_id=?", (sid,))
+        conn.execute(
+            "UPDATE sessions SET title='新对话' WHERE id=?", (sid,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
