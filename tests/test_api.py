@@ -674,7 +674,7 @@ def test_chat_nonstream_ollama_no_crash_on_done_event(monkeypatch):
     c = TestClient(main.app)
     c.post("/api/new")
 
-    async def fake_ollama(model, messages):
+    async def fake_ollama(model, messages, **kwargs):
         yield main._sse("token", _json.dumps("你好", ensure_ascii=False))
         yield main._sse("token", _json.dumps("世界", ensure_ascii=False))
         yield main._sse("done", _json.dumps({"ok": True}, ensure_ascii=False))
@@ -817,3 +817,42 @@ def test_save_messages_caps_content():
     # 正常长度不受影响
     db_store.save_messages(sid, [{"role": "user", "content": "短内容"}])
     assert db_store.get_messages(sid)[0]["content"] == "短内容"
+
+
+def test_list_sessions_respects_limit():
+    """R1 验证：GET /api/sessions?limit=N 只返回最近 N 个会话。"""
+    import db as db_store
+
+    c = TestClient(main.app)
+    before = len(db_store.list_sessions())
+    # 造 5 个新会话
+    for i in range(5):
+        c.post("/api/new")
+        c.post("/api/chat", json={"model": "mock",
+                                  "messages": [{"role": "user", "content": f"会话 {i}"}]})
+    total = len(db_store.list_sessions())
+    # limit=3 -> 至多 3 个
+    r = c.get("/api/sessions", params={"limit": 3})
+    assert r.status_code == 200
+    sessions = r.json()["sessions"]
+    assert len(sessions) == 3
+    assert total == before + 5  # 全量未受影响
+
+
+def test_list_sessions_title_and_limit_combined():
+    """R2 验证：?title= 与 ?limit= 同时给出时，limit 应被透传（不再被丢弃）。"""
+    import db as db_store
+
+    c = TestClient(main.app)
+    c.post("/api/new")
+    c.post("/api/chat", json={"model": "mock",
+                              "messages": [{"role": "user", "content": "组合过滤苹果专题"}]})
+    c.post("/api/new")
+    c.post("/api/chat", json={"model": "mock",
+                              "messages": [{"role": "user", "content": "组合过滤天气专题"}]})
+    # 标题命中「苹果」且 limit=1 -> 仅 1 条
+    r = c.get("/api/sessions", params={"title": "苹果", "limit": 1})
+    assert r.status_code == 200
+    sessions = r.json()["sessions"]
+    assert len(sessions) == 1
+    assert any("苹果" in s["title"] for s in sessions)

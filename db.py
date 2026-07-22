@@ -282,22 +282,29 @@ def get_title(sid: str) -> str:
     return row[0] if row else ""
 
 
-def list_sessions() -> list[dict]:
+def list_sessions(limit: "int | None" = None) -> list[dict]:
     """列出全部会话（含消息数），用于多会话管理 UI。
 
     按建立时间倒序，最近的在前。
     隐性性能：原实现对每个会话各发一次 count_messages 查询（N+1），会话多时
     列表端点明显变慢；这里用一次 LEFT JOIN + GROUP BY 拿到全部消息计数。
+    limit：可选上限（>0 时生效），便于会话极多时只取最近若干，避免一次性
+    拉取全量（与消息分页 / 检索思路一致）。
     """
     conn = _conn()
     try:
-        rows = conn.execute(
+        sql = (
             "SELECT s.id, s.model, s.created, s.title, COALESCE(m.cnt, 0) "
             "FROM sessions s "
             "LEFT JOIN (SELECT session_id, COUNT(*) AS cnt FROM messages GROUP BY session_id) m "
             "ON m.session_id = s.id "
             "ORDER BY s.created DESC"
-        ).fetchall()
+        )
+        params: list = []
+        if limit and limit > 0:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = conn.execute(sql, params).fetchall()
     finally:
         conn.close()
     out = []

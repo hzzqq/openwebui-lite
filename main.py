@@ -373,16 +373,22 @@ async def chat(req: ChatRequest, stream: bool = True):
 
 
 @app.get("/api/sessions")
-async def list_sessions_ep(title: str = ""):
+async def list_sessions_ep(title: str = "", limit: int = 0):
     """多会话管理：列出全部会话及当前会话 id。
 
     R1 新能力：可选 ?title= 关键词，按会话标题过滤（与 /api/search 的消息正文
     检索互补），便于会话多时快速定位目标会话。
+    R1 新能力：可选 ?limit= 限制返回会话数（>0 生效），会话极多时只取最近若干，
+    与消息分页思路一致，避免一次性拉取全量。
+    R2 修复：此前端点调用 search_sessions 时从不透传调用方 limit，导致
+    ?title= 与 ?limit= 同时给出时限被丢弃（search_sessions 的 limit 形同虚设）。
+    现统一解析 limit 并透传两条路径。
     """
+    resolved = limit if limit and limit > 0 else None
     if title:
-        sessions = db_store.search_sessions(title)
+        sessions = db_store.search_sessions(title, limit=resolved or 50)
     else:
-        sessions = db_store.list_sessions()
+        sessions = db_store.list_sessions(limit=resolved)
     return {"sessions": sessions, "current": _current_sid()}
 
 
