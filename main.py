@@ -410,12 +410,19 @@ async def export_session_ep(sid: str):
 
 
 @app.get("/api/sessions/{sid}/messages")
-async def session_messages_ep(sid: str, limit: int = 0, offset: int = 0):
-    """分页返回会话消息（limit<=0 表示不限），便于超长会话按需加载。"""
+async def session_messages_ep(sid: str, limit: int = 0, offset: int = 0, role: str = ""):
+    """分页返回会话消息（limit<=0 表示不限），便于超长会话按需加载。
+
+    R1 新能力：role 过滤（user / assistant），便于「只看用户提问」或
+    「只看助手回答」的场景（如导出、复盘、构建训练样本）。
+    非法 role 值（非 user/assistant）被忽略，等价不过滤，避免 400 误伤。
+    """
     limit = limit if limit and limit > 0 else None
-    msgs = db_store.get_messages(sid, limit=limit, offset=max(0, offset))
+    role_filter = role if role in ("user", "assistant") else None
+    msgs = db_store.get_messages(sid, limit=limit, offset=max(0, offset), role=role_filter)
     return {"ok": True, "id": sid, "messages": msgs,
-            "count": len(msgs), "limit": limit, "offset": max(0, offset)}
+            "count": len(msgs), "limit": limit, "offset": max(0, offset),
+            "role": role_filter}
 
 
 @app.get("/api/messages/{mid}")

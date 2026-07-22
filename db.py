@@ -113,26 +113,34 @@ def ensure_session(sid: str) -> None:
         conn.close()
 
 
-def get_messages(sid: str, limit: "int | None" = None, offset: int = 0) -> list[dict]:
+def get_messages(
+    sid: str, limit: "int | None" = None, offset: int = 0, role: "str | None" = None
+) -> list[dict]:
     """返回某会话的消息列表（按 id 升序）。
 
     limit/offset 用于分页：超大会话无需一次性全部载入（隐性性能/内存隐患）。
     limit 为 None 或 <=0 表示不限制。
+    role：可选过滤（"user" / "assistant"），None 表示不过滤。
+
+    R2 修复（一致性/可观测性）：原实现只返回 {role, content}，缺少每条消息的
+    id，导致前端通过分页接口拿到消息后无法定位/编辑/删除具体某条（只能再走
+    /api/messages/{mid} 但无从得知 mid）。现每条消息都带 id。
     """
+    params: list = [sid]
+    sql = "SELECT id, role, content FROM messages WHERE session_id=?"
+    if role:
+        sql += " AND role=?"
+        params.append(role)
+    sql += " ORDER BY id"
+    if limit and limit > 0:
+        sql += " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
     conn = _conn()
     try:
-        if limit and limit > 0:
-            rows = conn.execute(
-                "SELECT role, content FROM messages WHERE session_id=? "
-                "ORDER BY id LIMIT ? OFFSET ?", (sid, limit, offset)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT role, content FROM messages WHERE session_id=? ORDER BY id", (sid,)
-            ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     finally:
         conn.close()
-    return [{"role": r, "content": c} for r, c in rows]
+    return [{"id": r[0], "role": r[1], "content": r[2]} for r in rows]
 
 
 def save_messages(sid: str, messages: list[dict]) -> None:

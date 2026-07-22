@@ -519,3 +519,41 @@ def test_fork_unknown_session_returns_404():
     c = TestClient(main.app)
     r = c.post("/api/sessions/does_not_exist/fork")
     assert r.status_code == 404
+
+
+def test_session_messages_include_id():
+    """R2 验证：分页消息接口每条都应带 id，供前端定位/编辑/删除具体消息。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    c.post("/api/chat", json={"model": "mock", "messages": [
+        {"role": "user", "content": "ID_CHECK_QUESTION"},
+        {"role": "assistant", "content": "ID_CHECK_ANSWER"},
+    ]})
+    r = c.get(f"/api/sessions/{sid}/messages")
+    assert r.status_code == 200
+    msgs = r.json()["messages"]
+    assert len(msgs) == 2
+    assert all("id" in m for m in msgs)
+    assert any(m["content"] == "ID_CHECK_QUESTION" and m["role"] == "user" for m in msgs)
+
+
+def test_session_messages_role_filter():
+    """R1 验证：role=user 只返回用户消息，role=assistant 只返回助手消息。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    c.post("/api/chat", json={"model": "mock", "messages": [
+        {"role": "user", "content": "ROLE_Q1"},
+        {"role": "assistant", "content": "ROLE_A1"},
+        {"role": "user", "content": "ROLE_Q2"},
+    ]})
+    ru = c.get(f"/api/sessions/{sid}/messages?role=user")
+    um = ru.json()["messages"]
+    assert all(m["role"] == "user" for m in um)
+    assert len(um) == 2
+    ra = c.get(f"/api/sessions/{sid}/messages?role=assistant")
+    am = ra.json()["messages"]
+    assert all(m["role"] == "assistant" for m in am)
+    assert len(am) == 1
+    # 非法 role 被忽略（等价不过滤）
+    rbad = c.get(f"/api/sessions/{sid}/messages?role=system")
+    assert rbad.json()["count"] == 3
