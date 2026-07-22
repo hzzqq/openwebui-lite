@@ -216,6 +216,13 @@ class EditMessageRequest(BaseModel):
     content: str = ""
 
 
+class AppendMessageRequest(BaseModel):
+    """向会话追加单条消息的请求体（程序化 API 注入，区别于整体 chat 保存）。"""
+    # role 收口为合法枚举：畸形 role 在边界即 422，不再被静默落库。
+    role: Literal["system", "user", "assistant"]
+    content: str = ""
+
+
 @app.get("/api/models")
 async def models():
     return {"models": await _fetch_models(), "mock": MOCK_LLM}
@@ -505,6 +512,21 @@ async def session_messages_ep(sid: str, limit: int = 0, offset: int = 0, role: s
     return {"ok": True, "id": sid, "messages": msgs,
             "count": len(msgs), "total": total, "limit": limit, "offset": max(0, offset),
             "role": role_filter, "q": q_filter}
+
+
+@app.post("/api/sessions/{sid}/messages")
+async def append_message_ep(sid: str, req: AppendMessageRequest):
+    """向指定会话追加一条消息（程序化 API 注入，区别于整体 chat 保存）。
+
+    R1 新能力：无需每次传完整历史即可单条补录消息，适合 API 客户端 / 数据导入。
+    R2 一致性：复用 db.append_message（含 role 枚举校验 + 自动标题 + content 截断），
+    使通过本接口注入首条 user 消息的会话也能像 chat 一样自动派生标题，
+    行为不脱节。会话不存在返回 404；role 非法由 Pydantic 在边界 422。
+    """
+    result = db_store.append_message(sid, req.role, req.content)
+    if result is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return {"ok": True, **result}
 
 
 @app.get("/api/messages/{mid}")

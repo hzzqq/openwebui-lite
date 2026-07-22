@@ -947,3 +947,40 @@ def test_list_sessions_title_and_limit_combined():
     sessions = r.json()["sessions"]
     assert len(sessions) == 1
     assert any("苹果" in s["title"] for s in sessions)
+
+
+def test_append_message_to_session():
+    """R1 新需求验证：POST /api/sessions/{sid}/messages 单条追加并自动派生标题。"""
+    c = TestClient(main.app)
+    c.post("/api/new")
+    cur = c.get("/api/current").json()["session_id"]
+    r = c.post(f"/api/sessions/{cur}/messages",
+               json={"role": "user", "content": "通过 API 注入的问题"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["role"] == "user"
+    assert body.get("id")
+    # 与 chat 一致的自动标题：首条 user 消息应派生会话标题
+    sess = c.get(f"/api/sessions/{cur}").json()
+    assert "通过 API 注入的问题" in sess["title"]
+    # 消息确实落库
+    msgs = c.get(f"/api/sessions/{cur}/messages").json()["messages"]
+    assert any(m["role"] == "user" and "通过 API 注入的问题" in m["content"] for m in msgs)
+
+
+def test_append_message_invalid_role_422():
+    """R2 验证：畸形 role 在边界即 422，不被静默落库。"""
+    c = TestClient(main.app)
+    c.post("/api/new")
+    cur = c.get("/api/current").json()["session_id"]
+    r = c.post(f"/api/sessions/{cur}/messages", json={"role": "bot", "content": "x"})
+    assert r.status_code == 422
+
+
+def test_append_message_missing_session_404():
+    """R2 验证：会话不存在返回 404，而非静默创建/空成功。"""
+    c = TestClient(main.app)
+    r = c.post("/api/sessions/nonexistent_sid/messages",
+               json={"role": "user", "content": "x"})
+    assert r.status_code == 404

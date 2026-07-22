@@ -556,6 +556,60 @@ def update_message(mid: int, content: str) -> "dict | None":
     return {"id": mid, "session_id": sid, "role": role, "title": title}
 
 
+def append_message(sid: str, role: str, content: str) -> "dict | None":
+    """向指定会话追加一条消息（区别于 save_messages 的整体覆盖式保存）。
+
+    R1 新能力：为程序化 API 客户端提供「单条注入」入口，无需像 chat 那样
+    每次传完整历史再整体覆盖（覆盖式保存对「只想补一条」的场景过重，且
+    并发时易相互覆盖）。
+
+    R2 一致性（隐性正确性）：与 chat 路径的自动标题逻辑保持一致——若这是
+    会话的「第一条 user 消息」且当前标题为空或哨兵「新对话」，则自动派生
+    标题；否则用 append 接口注入首条用户消息会让会话始终顶着空/默认标题，
+    与 chat 行为不一致（可观测性缺陷）。
+    会话不存在返回 None（供端点 404）；content 统一按 100000 上限截断，
+    与 save_messages / update_message 口径一致。
+    """
+    if role not in ("system", "user", "assistant"):
+        raise ValueError(f"invalid role: {role!r}")
+    content = str(content)[:100000]
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT id FROM sessions WHERE id=?", (sid,)
+        ).fetchone()
+        if not row:
+            return None
+        cur = conn.execute(
+            "INSERT INTO messages(session_id, role, content, ts) VALUES(?, ?, ?, ?)",
+            (sid, role, content, time.time()),
+        )
+        mid = cur.lastrowid
+        title = ""
+        # 与 chat 一致的自动标题：仅当首条 user 消息且标题为空/哨兵时派生
+        first = conn.execute(
+            "SELECT id, role, content FROM messages WHERE session_id=? "
+            "ORDER BY id LIMIT 1", (sid,)
+        ).fetchone()
+        if first and first[1] == "user" and first[0] == mid:
+            existing = conn.execute(
+                "SELECT title FROM sessions WHERE id=?", (sid,)
+            ).fetchone()
+            existing_title = existing[0] if existing else ""
+            if not existing_title or existing_title == "新对话":
+                new_title = content.strip().replace("\n", " ")[:40]
+                if new_title:
+                    conn.execute(
+                        "UPDATE sessions SET title=? WHERE id=?", (new_title, sid)
+                    )
+                    title = new_title
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": mid, "session_id": sid, "role": role, "content": content, "title": title}
+
+
+
 def cleanup_sessions(keep: int = 10) -> int:
     """清理旧会话：保留最近 keep 个（按建立时间倒序），删除其余。
 
