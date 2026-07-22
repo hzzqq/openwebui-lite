@@ -492,3 +492,40 @@ def update_message(mid: int, content: str) -> "dict | None":
     finally:
         conn.close()
     return {"id": mid, "session_id": sid, "role": role, "title": title}
+
+
+def cleanup_sessions(keep: int = 10) -> int:
+    """清理旧会话：保留最近 keep 个（按建立时间倒序），删除其余。
+
+    设计动机（R1 新能力）：项目初衷即「避免旧会话无限堆积」，此前只能
+    逐个删除 / fork。现提供一次性批量清理——保留最新的 keep 个会话，
+    并**永不删除当前会话**（即便它不在最新的 keep 个之内），返回实际
+    删除的会话数，供运维/前端「整理会话列表」使用。
+
+    隐性正确性：用 `id != current` 先把当前会话排除在待删集合外，再按
+    created 倒序 OFFSET keep 取「其余更旧者」，保证当前指针不会因清理而悬空。
+    """
+    keep = max(1, int(keep))
+    cur = get_current_sid()
+    conn = _conn()
+    try:
+        # R2 修复（隐性过度保留）：旧实现先 `WHERE id != cur` 把当前会话排除在
+        # 保留集合之外，再 OFFSET keep 取「其余更旧者」删除——这会在「当前会话
+        # 本就处于最近 keep 个之内」时多保留 1 个（保留 keep+1 个），与文档
+        # 「保留最近 keep 个」及测试预期（删除数 = 总数 - keep）不符。
+        # 现改为：先取「最近 keep 个」作为基准保留集，再保证当前会话始终在内
+        # （取并集），其余一律删除。这样当前会话若已在最近 keep 个内则不多留。
+        rows = conn.execute(
+            "SELECT id FROM sessions ORDER BY created DESC LIMIT ?", (keep,)
+        ).fetchall()
+        keep_ids = {r[0] for r in rows}
+        keep_ids.add(cur)
+        all_rows = conn.execute("SELECT id FROM sessions").fetchall()
+        ids = [r[0] for r in all_rows if r[0] not in keep_ids]
+        for sid in ids:
+            conn.execute("DELETE FROM messages WHERE session_id=?", (sid,))
+            conn.execute("DELETE FROM sessions WHERE id=?", (sid,))
+        conn.commit()
+    finally:
+        conn.close()
+    return len(ids)

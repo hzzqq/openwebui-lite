@@ -260,11 +260,18 @@ async def search(q: str = "", limit: int = 50):
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest, stream: bool = True):
-    model = req.model
-    # 还原为内部使用的 dict 列表（已通过 Pydantic 校验，项为合法 {role, content}）
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
 
     sid = _current_sid()
+    # R1 新能力：模型解析优先级 请求显式 model > 本会话已存模型(per-session) >
+    # 全局默认设置。此前仅保存模型、从不回退，导致不重复传 model 的后续对话
+    # 丢失会话模型（R2 隐性缺陷：per-session 模型记忆形同虚设）。
+    model = (
+        req.model
+        or db_store.get_model(sid)
+        or db_store.get_setting("default_model")
+        or None
+    )
     if model:
         db_store.set_model(sid, model)
         db_store.set_setting("default_model", model)  # 记忆默认模型（跨会话）
@@ -320,9 +327,16 @@ async def chat(req: ChatRequest, stream: bool = True):
                     return JSONResponse(status_code=502, content={"error": err})
                 data = evt.split("data: ", 1)[1].strip()
                 try:
-                    parts.append(json.loads(data))
+                    parsed = json.loads(data)
                 except Exception:
-                    pass
+                    continue
+                # R2 修复（隐性崩溃）：Ollama 流末尾会发一个 data 为对象（如
+                # {"ok": true}）的 done 事件，若不做类型判断直接 append 再
+                # "".join，会因「字符串与 dict 混排」抛 TypeError，导致非流式
+                # 真实后端调用直接 500。只有字符串 token 才计入回复正文
+                # （与 _collect_sse_text 的 isinstance str 守卫一致）。
+                if isinstance(parsed, str):
+                    parts.append(parsed)
             reply = "".join(parts)
         return {"reply": reply, "ok": True, "model": model or "mock"}
 
@@ -404,6 +418,17 @@ async def clear_session_ep(sid: str):
     """清空会话消息但保留会话本身（重置为新一轮对话）。"""
     db_store.clear_messages(sid)
     return {"ok": True, "id": sid, "title": "新对话"}
+
+
+@app.post("/api/sessions/cleanup")
+async def cleanup_sessions_ep(keep: int = 10):
+    """批量清理旧会话：保留最近 keep 个，删除其余（当前会话永不被删）。
+
+    R1 新能力：针对「旧会话无限堆积」的整理入口；返回实际删除的会话数，
+    便于前端展示「已清理 N 个会话」。
+    """
+    removed = db_store.cleanup_sessions(keep)
+    return {"ok": True, "removed": removed, "current": _current_sid()}
 
 
 @app.get("/api/sessions/{sid}/export")

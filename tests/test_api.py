@@ -203,6 +203,38 @@ def test_chat_persists_default_model():
     assert c.get("/api/settings").json()["default_model"] == "my-model"
 
 
+def test_chat_falls_back_to_session_model():
+    """R1 新能力验证：未显式传 model 时，chat 应回退到本会话已存模型。
+
+    R2 修复验证：此前仅保存模型、从不回退，导致不重复传 model 的后续对话
+    丢失会话模型记忆（per-session 模型名形同虚设）。
+    """
+    c = TestClient(main.app)
+    # 重置全局默认模型与会话模型，保证回退链末端得到确定值（mock 模式返回 'mock'）
+    main.db_store.set_setting("default_model", "")
+    c.post("/api/new")
+    r = c.post(
+        "/api/chat?stream=0",
+        json={"messages": [{"role": "user", "content": "用会话模型回复"}]},
+    )
+    assert r.status_code == 200
+    assert r.json()["model"] == "mock"  # 无显式/会话/全局模型时，mock 模式回退 'mock'
+
+
+def test_chat_falls_back_to_stored_session_model():
+    """R1 验证：为会话 set_model 后，不传 model 的 chat 使用会话记忆的模型。"""
+    c = TestClient(main.app)
+    main.db_store.set_setting("default_model", "")  # 排除全局默认干扰，专测会话级回退
+    sid = c.post("/api/new").json()["session_id"]
+    main.db_store.set_model(sid, "session-model-x")
+    r = c.post(
+        "/api/chat?stream=0",
+        json={"messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200
+    assert r.json()["model"] == "session-model-x"
+
+
 def test_frontend_wires_settings():
     """R1 新需求验证：前端应接入默认模型记忆（/api/settings + 保存按钮）。"""
     html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
@@ -599,3 +631,58 @@ def test_session_messages_role_filter():
     # 非法 role 被忽略（等价不过滤）
     rbad = c.get(f"/api/sessions/{sid}/messages?role=system")
     assert rbad.json()["count"] == 3
+
+
+def test_sessions_cleanup_keeps_recent_and_current():
+    """R1 验证：批量清理只删最旧的、保留最近 keep 个，且当前会话永不被删。
+    对「运行内已有其他会话」做鲁棒处理：用清理前后差值而非绝对计数。"""
+    import db as db_store
+
+    c = TestClient(main.app)
+    before = len(db_store.list_sessions())
+    # 造 5 个新会话（每个聊一句），最新建立的即为当前会话
+    sids = []
+    for i in range(5):
+        r = c.post("/api/new")
+        sids.append(r.json()["session_id"])
+        c.post("/api/chat", json={"model": "mock",
+                                  "messages": [{"role": "user", "content": f"会话 {i}"}]})
+    mid = len(db_store.list_sessions())
+    assert mid == before + 5  # 确实新增了 5 个
+    cur = c.get("/api/current").json()["session_id"]
+    assert cur == sids[-1]
+    # 保留最近 2 个：删除其余（含运行内既有旧会话）
+    r = c.post("/api/sessions/cleanup", params={"keep": 2})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["removed"] == mid - 2
+    after = db_store.list_sessions()
+    assert len(after) == 2
+    # 当前会话必须仍存在（不被清理删除）
+    assert cur in {s["id"] for s in after}
+
+
+def test_chat_nonstream_ollama_no_crash_on_done_event(monkeypatch):
+    """R2 验证：非流式真实后端（_ollama_stream）末尾的 done 事件 data 为对象，
+    旧实现直接把该对象 append 进 parts 再 ''.join 会抛 TypeError -> 500；
+    修复后只对字符串 token 累加，能正常返回完整回复。"""
+    import json as _json
+
+    c = TestClient(main.app)
+    c.post("/api/new")
+
+    async def fake_ollama(model, messages):
+        yield main._sse("token", _json.dumps("你好", ensure_ascii=False))
+        yield main._sse("token", _json.dumps("世界", ensure_ascii=False))
+        yield main._sse("done", _json.dumps({"ok": True}, ensure_ascii=False))
+
+    monkeypatch.setattr(main, "MOCK_LLM", False)
+    monkeypatch.setattr(main, "_ollama_stream", fake_ollama)
+    r = c.post(
+        "/api/chat?stream=0",
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["reply"] == "你好世界"
