@@ -478,3 +478,44 @@ def test_session_messages_pagination_still_passes():
         hist.append({"role": "assistant", "content": f"回答{i}"})
         c.post("/api/chat", json={"model": "mock", "messages": list(hist)})
     assert main.db_store.count_messages(sid) == 10
+
+
+def test_fork_session_copies_messages_and_title():
+    """R1：克隆会话应复制全部消息与标题，且新旧会话互不影响。"""
+    import db as db_store
+
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    c.post("/api/sessions/" + sid + "/rename", json={"title": "FORK_SOURCE"})
+    c.post("/api/chat", json={"model": "mock", "messages": [
+        {"role": "user", "content": "FORK_MARKER_A"},
+        {"role": "assistant", "content": "FORK_MARKER_B"},
+    ]})
+    assert db_store.count_messages(sid) == 2
+
+    r = c.post("/api/sessions/" + sid + "/fork", params={"title": "FORKED"})
+    assert r.status_code == 200
+    data = r.json()
+    new_sid = data["id"]
+    assert new_sid != sid
+    assert data["title"] == "FORKED"
+    # 新会话含原会话全部消息
+    assert db_store.count_messages(new_sid) == 2
+    new_msgs = db_store.get_messages(new_sid)
+    assert any("FORK_MARKER_A" in m["content"] for m in new_msgs)
+    # 切到新会话后再追加消息，验证分叉独立性（fork 不自动切换当前会话）
+    c.post("/api/sessions/" + new_sid + "/switch")
+    c.post("/api/chat", json={"model": "mock", "messages": [
+        {"role": "user", "content": "FORK_MARKER_A"},
+        {"role": "assistant", "content": "FORK_MARKER_B"},
+        {"role": "user", "content": "EXTRA_AFTER_FORK"},
+    ]})
+    assert db_store.count_messages(new_sid) == 3
+    assert db_store.count_messages(sid) == 2  # 源会话未变
+
+
+def test_fork_unknown_session_returns_404():
+    """R1：克隆不存在的会话应返回 404，而非静默创建空会话。"""
+    c = TestClient(main.app)
+    r = c.post("/api/sessions/does_not_exist/fork")
+    assert r.status_code == 404

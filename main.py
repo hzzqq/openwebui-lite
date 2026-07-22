@@ -375,6 +375,18 @@ async def rename_session_ep(sid: str, req: RenameRequest):
     return {"ok": True, "id": sid, "title": title}
 
 
+@app.post("/api/sessions/{sid}/fork")
+async def fork_session_ep(sid: str, title: str = ""):
+    """克隆会话（复制模型/标题/全部消息），用于在不破坏原会话的前提下分叉探索。
+
+    源会话不存在时返回 404（而非静默创建空会话）。
+    """
+    new_sid = db_store.copy_session(sid, title or None)
+    if not new_sid:
+        raise HTTPException(status_code=404, detail="session not found")
+    return {"ok": True, "id": new_sid, "title": db_store.get_title(new_sid)}
+
+
 @app.post("/api/sessions/{sid}/clear")
 async def clear_session_ep(sid: str):
     """清空会话消息但保留会话本身（重置为新一轮对话）。"""

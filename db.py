@@ -14,7 +14,12 @@ import sqlite3
 import time
 import uuid
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions.db")
+# 允许通过环境变量重定向数据库文件（测试隔离 / 自定义路径）。
+# 默认落盘于模块同目录的 sessions.db。
+DB_PATH = os.environ.get(
+    "OPENWEBUI_DB_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "sessions.db"),
+)
 
 
 def _conn() -> sqlite3.Connection:
@@ -168,6 +173,39 @@ def new_session() -> str:
     ensure_session(sid)
     set_current_sid(sid)
     return sid
+
+
+def copy_session(src_sid: str, title: "str | None" = None) -> "str | None":
+    """克隆一个会话：复制其模型、标题与全部消息，返回新会话 id。
+
+    用于「分叉探索」——在某一轮对话基础上开新支线而不破坏原会话。
+    源会话不存在时返回 None（调用方应据此返回 404）。
+    """
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT model, title FROM sessions WHERE id=?", (src_sid,)
+        ).fetchone()
+        if not row:
+            return None
+        src_model, src_title = row
+        msgs = conn.execute(
+            "SELECT role, content FROM messages WHERE session_id=? ORDER BY id",
+            (src_sid,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    new_sid = uuid.uuid4().hex
+    ensure_session(new_sid)
+    if src_model:
+        set_model(new_sid, src_model)
+    final_title = title if title else (src_title or "")
+    set_title(new_sid, final_title)
+    copied = [{"role": r, "content": c} for r, c in msgs]
+    if copied:
+        save_messages(new_sid, copied)
+    return new_sid
 
 
 # ---------------------------------------------------------------------------
