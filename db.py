@@ -363,3 +363,41 @@ def delete_message(mid: int) -> "dict | None":
         conn.close()
     return {"id": mid, "session_id": sid, "role": role,
             "message_count": cnt, "title": title}
+
+
+def update_message(mid: int, content: str) -> "dict | None":
+    """编辑单条消息内容（区别于删除/覆盖式保存）。
+
+    R1 新能力：支持就地修订某条历史消息（如改错别字、补全问题）。
+    R2 修复（隐性一致性缺陷）：若该消息是会话的「第一条 user 消息」，
+    它往往正是自动标题的来源；改了内容却不同步标题，会造成
+    「会话标题与首条内容不一致」的错觉。这里在编辑首条 user 消息且
+    内容非空时，自动同步更新会话标题，与 auto-title 行为一致。
+    消息不存在返回 None（供端点 404）。
+    """
+    content = str(content)[:100000]  # 防超大内容撑爆单元格
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT session_id, role FROM messages WHERE id=?", (mid,)
+        ).fetchone()
+        if not row:
+            return None
+        sid, role = row
+        conn.execute("UPDATE messages SET content=? WHERE id=?", (content, mid))
+        title = None
+        first = conn.execute(
+            "SELECT id, role, content FROM messages WHERE session_id=? "
+            "ORDER BY id LIMIT 1", (sid,)
+        ).fetchone()
+        if first and first[1] == "user" and first[0] == mid:
+            new_title = content.strip().replace("\n", " ")[:40]
+            if new_title:
+                conn.execute(
+                    "UPDATE sessions SET title=? WHERE id=?", (new_title, sid)
+                )
+                title = new_title
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": mid, "session_id": sid, "role": role, "title": title}

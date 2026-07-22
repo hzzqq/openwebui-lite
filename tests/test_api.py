@@ -290,6 +290,36 @@ def test_get_single_message():
     assert r.json()["session_id"] == sid
 
 
+def test_edit_message_updates_content():
+    """R1 新需求验证：PUT /api/messages/{mid} 就地修订内容。"""
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    main.db_store.save_messages(
+        sid,
+        [{"role": "user", "content": "原问题"},
+         {"role": "assistant", "content": "原回答"}],
+    )
+    mid = _first_mid(sid)
+    r = c.put(f"/api/messages/{mid}", json={"content": "修订后的问题"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert main.db_store.get_messages(sid)[0]["content"] == "修订后的问题"
+
+
+def test_edit_first_user_message_synced_title():
+    """R2 修复验证：编辑首条 user 消息应同步会话标题。"""
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    main.db_store.save_messages(sid, [{"role": "user", "content": "初始标题来源"}])
+    mid = _first_mid(sid)
+    c.put(f"/api/messages/{mid}", json={"content": "新的标题来源"})
+    assert main.db_store.get_title(sid) == "新的标题来源"
+
+
+def test_edit_missing_message_404():
+    c = TestClient(main.app)
+    r = c.put("/api/messages/99999999", json={"content": "x"})
+    assert r.status_code == 404
 
 def test_chat_rejects_malformed_messages():
     """R2 隐性健壮性：messages 非法（非 {role,content}）应被校验拒绝，而非 500。"""

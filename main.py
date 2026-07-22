@@ -194,6 +194,11 @@ class RenameRequest(BaseModel):
     title: str
 
 
+class EditMessageRequest(BaseModel):
+    """编辑单条消息请求体。"""
+    content: str = ""
+
+
 @app.get("/api/models")
 async def models():
     return {"models": await _fetch_models(), "mock": MOCK_LLM}
@@ -424,6 +429,21 @@ async def delete_message_ep(mid: int):
     删除后若会话已空，标题自动重置为「新对话」（一致性）。
     """
     res = db_store.delete_message(mid)
+    if res is None:
+        raise HTTPException(status_code=404, detail="message not found")
+    return {"ok": True, **res}
+
+
+@app.put("/api/messages/{mid}")
+async def edit_message_ep(mid: int, req: EditMessageRequest):
+    """编辑单条消息内容（区别于清空/删除整个会话）。
+
+    R1 新能力：就地修订某条历史消息。
+    R2 修复：若编辑的是会话「首条 user 消息」（往往即自动标题来源），
+    同步更新会话标题，避免「标题与首条内容脱节」的错觉；
+    消息不存在返回 404。
+    """
+    res = db_store.update_message(mid, req.content)
     if res is None:
         raise HTTPException(status_code=404, detail="message not found")
     return {"ok": True, **res}
