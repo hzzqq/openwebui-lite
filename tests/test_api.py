@@ -1091,3 +1091,72 @@ def test_export_missing_session_returns_404():
     c = TestClient(main.app)
     r = c.get("/api/sessions/no_such_sid/export")
     assert r.status_code == 404
+
+
+def test_regenerate_replaces_last_assistant_reply():
+    """R1 新需求验证：regenerate 应替换末尾助手回复，不重复堆叠。"""
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    main.db_store.save_messages(sid, [
+        {"role": "user", "content": "初次提问"},
+        {"role": "assistant", "content": "旧回答"},
+    ])
+    r = c.post(f"/api/sessions/{sid}/regenerate")
+    assert r.status_code == 200
+    # 流结束后再读：应为 user + 新 assistant，且不应有两条 assistant
+    msgs = main.db_store.get_messages(sid)
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert "旧回答" not in msgs[1]["content"]
+    # 新助手回复为 mock 内容（含用户输入回声）
+    assert "初次提问" in msgs[1]["content"]
+
+
+def test_regenerate_without_existing_assistant_appends():
+    """R1：末尾是用户消息时，regenerate 应补一条新助手回复而非重复。"""
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    main.db_store.save_messages(sid, [{"role": "user", "content": "只有问题"}])
+    r = c.post(f"/api/sessions/{sid}/regenerate")
+    assert r.status_code == 200
+    msgs = main.db_store.get_messages(sid)
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+
+
+def test_regenerate_empty_session_returns_400():
+    """R1：空会话无法重新生成，返回 400。"""
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    r = c.post(f"/api/sessions/{sid}/regenerate")
+    assert r.status_code == 400
+
+
+def test_delete_title_source_rederives_title():
+    """R2 修复验证：删除作为标题来源的首条 user 消息后，标题应重新派生。"""
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    main.db_store.save_messages(sid, [
+        {"role": "user", "content": "第一个问题"},
+        {"role": "assistant", "content": "回答一"},
+        {"role": "user", "content": "第二个问题"},
+    ])
+    # 模拟 chat/append 自动派生的标题
+    main.db_store.set_title(sid, "第一个问题")
+    mid = main.db_store.get_messages(sid)[0]["id"]
+    r = c.delete(f"/api/messages/{mid}")
+    assert r.status_code == 200
+    # 标题应重新派生自新的首条 user 消息「第二个问题」
+    assert main.db_store.get_title(sid) == "第二个问题"
+
+
+def test_delete_first_user_with_custom_title_preserved():
+    """R2：自定义标题（rename）在删除首条 user 消息后不被覆盖。"""
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    main.db_store.save_messages(sid, [
+        {"role": "user", "content": "第一个问题"},
+        {"role": "user", "content": "第二个问题"},
+    ])
+    main.db_store.set_title(sid, "我的自定义标题")
+    mid = main.db_store.get_messages(sid)[0]["id"]
+    c.delete(f"/api/messages/{mid}")
+    assert main.db_store.get_title(sid) == "我的自定义标题"

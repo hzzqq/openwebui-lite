@@ -525,11 +525,11 @@ def delete_message(mid: int) -> "dict | None":
     conn = _conn()
     try:
         row = conn.execute(
-            "SELECT session_id, role FROM messages WHERE id=?", (mid,)
+            "SELECT session_id, role, content FROM messages WHERE id=?", (mid,)
         ).fetchone()
         if not row:
             return None
-        sid, role = row
+        sid, role, deleted_content = row
         conn.execute("DELETE FROM messages WHERE id=?", (mid,))
         cnt = conn.execute(
             "SELECT COUNT(*) FROM messages WHERE session_id=?", (sid,)
@@ -541,6 +541,38 @@ def delete_message(mid: int) -> "dict | None":
             title = "新对话"
         else:
             conn.commit()
+            # R2 修复（隐性一致性缺陷）：若被删的是会话「标题来源」——首条
+            # user 消息且当前标题正是由其派生（或与哨兵「新对话」一致），删除后
+            # 标题应重新派生自新的首条 user 消息，而非停留在已删除的内容上，
+            # 造成「标题与首条内容脱节」的错觉。自定义标题（rename 设置、与
+            # 消息文本不同）不受影响，避免覆盖用户意图。
+            if role == "user":
+                cur = conn.execute(
+                    "SELECT title FROM sessions WHERE id=?", (sid,)
+                ).fetchone()
+                cur_title = cur[0] if cur else ""
+                deleted_derived = (deleted_content or "").strip().replace("\n", " ")[:40]
+                if cur_title and (cur_title == deleted_derived or cur_title == "新对话"):
+                    # 重新派生自会话中「第一条 user 消息」（即便它前面夹着
+                    # 孤助助手消息，也跳过找真正的用户提问），保持标题反映对话主题。
+                    first_user = conn.execute(
+                        "SELECT role, content FROM messages WHERE session_id=? "
+                        "AND role='user' ORDER BY id LIMIT 1", (sid,)
+                    ).fetchone()
+                    if first_user and (first_user[1] or "").strip():
+                        new_title = (first_user[1]).strip().replace("\n", " ")[:40]
+                        conn.execute(
+                            "UPDATE sessions SET title=? WHERE id=?", (new_title, sid)
+                        )
+                        conn.commit()
+                        title = new_title
+                    else:
+                        # 没有任何用户消息可派生，重置为哨兵
+                        conn.execute(
+                            "UPDATE sessions SET title='新对话' WHERE id=?", (sid,)
+                        )
+                        conn.commit()
+                        title = "新对话"
     finally:
         conn.close()
     return {"id": mid, "session_id": sid, "role": role,

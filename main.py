@@ -588,6 +588,72 @@ async def edit_message_ep(mid: int, req: EditMessageRequest):
     return {"ok": True, **res}
 
 
+@app.post("/api/sessions/{sid}/regenerate")
+async def regenerate_ep(sid: str):
+    """重新生成最后一条助手回复（常见聊天 UX：对上一条回答不满意时重答）。
+
+    R1 新能力：若会话末尾是助手回复，先删除它再基于其前的历史重新生成；
+    若末尾是用户消息，则直接为其补一条新助手回复。生成复用与 chat 相同的
+    SSE / Mock 链路，并在流结束后把新回复落盘，保证「重新生成」后历史持久化一致。
+    会话不存在 / 无消息 / 无用户上下文时返回 400。
+    """
+    msgs = db_store.get_messages(sid)
+    if not msgs:
+        raise HTTPException(status_code=400, detail="会话无消息，无法重新生成")
+    # 末尾若是助手回复，先移除以替换
+    if msgs[-1].get("role") == "assistant":
+        db_store.delete_message(msgs[-1]["id"])
+        msgs = msgs[:-1]
+    if not msgs:
+        raise HTTPException(status_code=400, detail="没有可作为上下文的用户消息")
+
+    user_text = ""
+    for m in reversed(msgs):
+        if m.get("role") == "user":
+            user_text = m.get("content", "")
+            break
+    history = [{"role": m["role"], "content": m["content"]} for m in msgs]
+
+    async def event_gen():
+        token_parts: list = []
+        if MOCK_LLM:
+            gen = _mock_stream(user_text)
+        else:
+            model = (
+                db_store.get_model(sid)
+                or db_store.get_setting("default_model")
+                or None
+            )
+            if not model:
+                yield _sse("error", json.dumps("请先选择或输入模型名称", ensure_ascii=False))
+                return
+            gen = _ollama_stream(model, history)
+        async for chunk in gen:
+            # 从 token 事件抽取文本，留待流结束后落盘
+            if "data: " in chunk:
+                payload = chunk.split("data: ", 1)[1].strip()
+                try:
+                    data = json.loads(payload)
+                except Exception:
+                    data = None
+                if isinstance(data, str):
+                    token_parts.append(data)
+            yield chunk
+        reply = "".join(token_parts)
+        if reply:
+            db_store.append_message(sid, "assistant", reply)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/api/history")
 async def history():
     sess = _load_session()
