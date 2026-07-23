@@ -1160,3 +1160,56 @@ def test_delete_first_user_with_custom_title_preserved():
     mid = main.db_store.get_messages(sid)[0]["id"]
     c.delete(f"/api/messages/{mid}")
     assert main.db_store.get_title(sid) == "我的自定义标题"
+
+
+def test_backup_includes_empty_session():
+    """R1：新创建的空会话也应出现在备份中（message_count=0, messages=[]）。
+
+    注：测试库在整个 pytest 运行中共享，不能假设全局为空，故改为校验
+    「刚新建的空会话是否被完整包含在备份里」。
+    """
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    r = c.get("/api/backup")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    found = [s for s in data["sessions"] if s["id"] == sid]
+    assert found, "新建空会话应出现在备份中"
+    assert found[0]["message_count"] == 0
+    assert found[0]["messages"] == []
+
+
+def test_backup_includes_sessions_and_messages():
+    """R1：备份应含全部会话及其完整消息（role/content 保留）。"""
+    c = TestClient(main.app)
+    marker_a = f"备份会话A_{__import__('uuid').uuid4().hex[:8]}"
+    marker_b = f"备份会话B_{__import__('uuid').uuid4().hex[:8]}"
+    c.post("/api/new")
+    c.post("/api/chat", json={"model": "mock",
+                              "messages": [{"role": "user", "content": marker_a}]})
+    c.post("/api/new")
+    c.post("/api/chat", json={"model": "mock",
+                              "messages": [{"role": "user", "content": marker_b}]})
+
+    r = c.get("/api/backup")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["count"] >= 2
+    by_title = {s["title"]: s for s in data["sessions"]}
+    assert marker_a in by_title and marker_b in by_title
+    a = by_title[marker_a]
+    assert a["message_count"] >= 1
+    assert any(m["role"] == "user" and marker_a in (m["content"] or "")
+               for m in a["messages"])
+    assert "model" in a and "created" in a
+
+
+def test_append_title_after_assistant_first():
+    """R2 修复验证：首条为 assistant 时，后续 user 消息仍应触发自动标题派生。"""
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    main.db_store.append_message(sid, "assistant", "bot greeting")
+    main.db_store.append_message(sid, "user", "我的第一个真实问题")
+    # 修复前标题停留在空/「新对话」；修复后派生自首条 user 消息
+    assert main.db_store.get_title(sid) == "我的第一个真实问题"

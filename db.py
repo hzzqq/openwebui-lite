@@ -428,6 +428,33 @@ def get_stats() -> dict:
     return {"sessions": s_count, "messages": m_count}
 
 
+def export_all_sessions() -> list[dict]:
+    """全量备份导出：返回全部会话及其完整消息（用于整体迁移 / 备份）。
+
+    R1 新能力：与单会话 export_session（c33 的 /api/sessions/{sid}/export）
+    互补——后者导出单个会话的 Markdown，本函数一次性导出所有会话为机读
+    JSON 结构（含 id / title / model / created / messages），便于整库备份、
+    跨环境迁移或离线分析，而不必逐会话调用。
+    """
+    out = []
+    for s in list_sessions(limit=None):
+        sid = s["id"]
+        msgs = get_messages(sid)  # 全部消息，按 id 升序
+        out.append(
+            {
+                "id": sid,
+                "title": s["title"],
+                "model": s["model"],
+                "created": s["created"],
+                "message_count": s["message_count"],
+                "messages": [
+                    {"role": m["role"], "content": m["content"]} for m in msgs
+                ],
+            }
+        )
+    return out
+
+
 def search_messages(q: str, limit: int = 50, role: "str | None" = None) -> list[dict]:
     """跨会话按内容模糊检索消息（LIKE 匹配），用于历史定位。
 
@@ -647,23 +674,29 @@ def append_message(sid: str, role: str, content: str) -> "dict | None":
         )
         mid = cur.lastrowid
         title = ""
-        # 与 chat 一致的自动标题：仅当首条 user 消息且标题为空/哨兵时派生
-        first = conn.execute(
-            "SELECT id, role, content FROM messages WHERE session_id=? "
-            "ORDER BY id LIMIT 1", (sid,)
-        ).fetchone()
-        if first and first[1] == "user" and first[0] == mid:
-            existing = conn.execute(
-                "SELECT title FROM sessions WHERE id=?", (sid,)
+        # 与 chat 一致的自动标题：当本消息是「会话中首条 user 消息」且标题
+        # 为空/哨兵时派生。
+        # R2 修复（隐性可读性缺陷）：原实现要求「本消息是绝对首条消息」
+        # （first[0]==mid），若首条为 assistant（API 注入场景），后续 user 消息
+        # 永不触发标题派生，会话列表顶着空/默认标题、可读性缺失。现改为
+        # 「不存在更早的 user 消息」即视为首条 user 消息，正确派生标题。
+        if role == "user":
+            has_earlier_user = conn.execute(
+                "SELECT 1 FROM messages WHERE session_id=? AND role='user' AND id<? "
+                "LIMIT 1", (sid, mid)
             ).fetchone()
-            existing_title = existing[0] if existing else ""
-            if not existing_title or existing_title == "新对话":
-                new_title = content.strip().replace("\n", " ")[:40]
-                if new_title:
-                    conn.execute(
-                        "UPDATE sessions SET title=? WHERE id=?", (new_title, sid)
-                    )
-                    title = new_title
+            if not has_earlier_user:
+                existing = conn.execute(
+                    "SELECT title FROM sessions WHERE id=?", (sid,)
+                ).fetchone()
+                existing_title = existing[0] if existing else ""
+                if not existing_title or existing_title == "新对话":
+                    new_title = content.strip().replace("\n", " ")[:40]
+                    if new_title:
+                        conn.execute(
+                            "UPDATE sessions SET title=? WHERE id=?", (new_title, sid)
+                        )
+                        title = new_title
         conn.commit()
     finally:
         conn.close()

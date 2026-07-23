@@ -506,6 +506,19 @@ async def export_session_ep(sid: str):
     return {"ok": True, "id": sid, "title": title, "markdown": "\n".join(lines)}
 
 
+@app.get("/api/backup")
+async def backup_ep():
+    """整库备份导出：一次性导出所有会话及其完整消息为机读 JSON。
+
+    R1 新能力：与单会话 /api/sessions/{sid}/export（Markdown）互补，提供
+    全量备份能力（迁移 / 离线分析 / 灾难恢复），无需逐会话调用。返回结构
+    {"ok": True, "count": N, "sessions": [{id, title, model, created,
+    message_count, messages:[{role, content}]}]}。
+    """
+    sessions = db_store.export_all_sessions()
+    return {"ok": True, "count": len(sessions), "sessions": sessions}
+
+
 @app.get("/api/sessions/{sid}/messages")
 async def session_messages_ep(sid: str, limit: int = 0, offset: int = 0, role: str = "", q: str = ""):
     """分页返回会话消息（limit<=0 表示不限），便于超长会话按需加载。
