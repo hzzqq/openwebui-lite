@@ -851,8 +851,8 @@ def test_chat_passes_generation_params(monkeypatch):
 
     captured = {}
 
-    async def fake_ollama(model, messages, temperature=None, max_tokens=None):
-        captured["options"] = {"temperature": temperature, "max_tokens": max_tokens}
+    async def fake_ollama(model, messages, temperature=None, max_tokens=None, top_p=None):
+        captured["options"] = {"temperature": temperature, "max_tokens": max_tokens, "top_p": top_p}
         yield main._sse("token", _json.dumps("ok", ensure_ascii=False))
         yield main._sse("done", _json.dumps({"ok": True}, ensure_ascii=False))
 
@@ -870,6 +870,7 @@ def test_chat_passes_generation_params(monkeypatch):
     assert r.status_code == 200
     assert captured["options"]["temperature"] == 0.7
     assert captured["options"]["max_tokens"] == 256
+    assert captured["options"]["top_p"] is None  # 未传 top_p -> 不应注入
 
 
 def test_chat_omits_default_generation_params(monkeypatch):
@@ -881,8 +882,10 @@ def test_chat_omits_default_generation_params(monkeypatch):
 
     captured = {}
 
-    async def fake_ollama(model, messages, temperature=None, max_tokens=None):
-        captured["payload_has_options"] = temperature is not None or max_tokens is not None
+    async def fake_ollama(model, messages, temperature=None, max_tokens=None, top_p=None):
+        captured["payload_has_options"] = (
+            temperature is not None or max_tokens is not None or top_p is not None
+        )
         yield main._sse("token", _json.dumps("ok", ensure_ascii=False))
         yield main._sse("done", _json.dumps({"ok": True}, ensure_ascii=False))
 
@@ -1029,3 +1032,62 @@ def test_get_messages_offset_without_limit():
 def test_db_get_session_detail_none_for_missing():
     """R1 回归：db.get_session_detail 对缺失会话返回 None。"""
     assert main.db_store.get_session_detail("no_such_session") is None
+
+
+def test_chat_passes_top_p_to_ollama(monkeypatch):
+    """R1 验证：top_p 核采样参数经 ChatRequest 透传到 Ollama options 载荷。"""
+    import json as _json
+
+    c = TestClient(main.app)
+    c.post("/api/new")
+
+    captured = {}
+
+    async def fake_ollama(model, messages, temperature=None, max_tokens=None, top_p=None):
+        captured["top_p"] = top_p
+        yield main._sse("token", _json.dumps("ok", ensure_ascii=False))
+        yield main._sse("done", _json.dumps({"ok": True}, ensure_ascii=False))
+
+    monkeypatch.setattr(main, "MOCK_LLM", False)
+    monkeypatch.setattr(main, "_ollama_stream", fake_ollama)
+    r = c.post(
+        "/api/chat?stream=0",
+        json={
+            "model": "x",
+            "messages": [{"role": "user", "content": "hi"}],
+            "top_p": 0.9,
+        },
+    )
+    assert r.status_code == 200
+    assert captured["top_p"] == 0.9
+
+
+def test_chat_omits_default_top_p(monkeypatch):
+    """R1 验证：未传 top_p 时，不向 Ollama 注入 top_p（沿用模型默认）。"""
+    import json as _json
+
+    c = TestClient(main.app)
+    c.post("/api/new")
+
+    captured = {}
+
+    async def fake_ollama(model, messages, temperature=None, max_tokens=None, top_p=None):
+        captured["top_p_seen"] = top_p is not None
+        yield main._sse("token", _json.dumps("ok", ensure_ascii=False))
+        yield main._sse("done", _json.dumps({"ok": True}, ensure_ascii=False))
+
+    monkeypatch.setattr(main, "MOCK_LLM", False)
+    monkeypatch.setattr(main, "_ollama_stream", fake_ollama)
+    r = c.post(
+        "/api/chat?stream=0",
+        json={"model": "x", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert r.status_code == 200
+    assert captured["top_p_seen"] is False
+
+
+def test_export_missing_session_returns_404():
+    """R2 修复验证：导出不存在的会话应返回 404，而非 200 空 Markdown。"""
+    c = TestClient(main.app)
+    r = c.get("/api/sessions/no_such_sid/export")
+    assert r.status_code == 404

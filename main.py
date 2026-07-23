@@ -135,11 +135,11 @@ async def _mock_stream(user_msg: str) -> str:
     yield _sse("done", json.dumps({"ok": True}, ensure_ascii=False))
 
 
-async def _ollama_stream(model: str, messages: List[Dict], temperature=None, max_tokens=None) -> str:
+async def _ollama_stream(model: str, messages: List[Dict], temperature=None, max_tokens=None, top_p=None) -> str:
     """转发到 Ollama /api/chat（stream=true），增量 token 推给前端。
 
-    R1 新能力：temperature / max_tokens 经 options 透传给 Ollama，
-    让用户/调用方控制生成温度与长度（仅当显式传入时附加，避免覆盖模型默认）。
+    R1 新能力：temperature / max_tokens / top_p 经 options 透传给 Ollama，
+    让用户/调用方控制生成温度、长度与核采样（仅当显式传入时附加，避免覆盖模型默认）。
     """
     payload = {"model": model, "messages": messages, "stream": True}
     options = {}
@@ -147,6 +147,8 @@ async def _ollama_stream(model: str, messages: List[Dict], temperature=None, max
         options["temperature"] = temperature
     if max_tokens is not None:
         options["max_tokens"] = max_tokens
+    if top_p is not None:
+        options["top_p"] = top_p
     if options:
         payload["options"] = options
     try:
@@ -195,10 +197,11 @@ class ChatRequest(BaseModel):
     """聊天请求体（输入校验，避免裸 JSON 解析导致 500）。"""
     model: str = ""
     messages: List[MessageItem] = Field(default_factory=list)
-    # R1 新能力：生成参数透传（与 CLI 侧 ask/chat 一致），便于控制温度/长度。
+    # R1 新能力：生成参数透传（与 CLI 侧 ask/chat 一致），便于控制温度/长度/核采样。
     # 默认 None 表示沿用模型默认；经 _ollama_stream 透传到 Ollama options。
     temperature: "float | None" = None
     max_tokens: "int | None" = None
+    top_p: "float | None" = None
 
 
 class SettingsRequest(BaseModel):
@@ -337,7 +340,8 @@ async def chat(req: ChatRequest, stream: bool = True):
                 yield _sse("error", json.dumps("请先选择或输入模型名称", ensure_ascii=False))
                 return
             async for chunk in _ollama_stream(
-                model, messages, temperature=req.temperature, max_tokens=req.max_tokens
+                model, messages, temperature=req.temperature,
+                max_tokens=req.max_tokens, top_p=req.top_p
             ):
                 yield chunk
 
@@ -354,7 +358,8 @@ async def chat(req: ChatRequest, stream: bool = True):
         else:
             parts = []
             async for evt in _ollama_stream(
-                model, messages, temperature=req.temperature, max_tokens=req.max_tokens
+                model, messages, temperature=req.temperature,
+                max_tokens=req.max_tokens, top_p=req.top_p
             ):
                 if evt.startswith("event: error"):
                     data = evt.split("data: ", 1)[1].strip()
@@ -481,7 +486,14 @@ async def cleanup_sessions_ep(keep: int = 10):
 
 @app.get("/api/sessions/{sid}/export")
 async def export_session_ep(sid: str):
-    """将会话导出为 Markdown 文本（便于存档 / 分享），原样返回消息流转。"""
+    """将会话导出为 Markdown 文本（便于存档 / 分享），原样返回消息流转。
+
+    R2 修复（隐性一致性缺陷）：原实现对不存在的会话也返回 200 与一段空
+    「对话记录」Markdown，与 get_session_ep（缺失即 404）行为不一致，
+    会给调用方造成「幽灵会话可导出」的错觉。现先校验会话存在，缺失则 404。
+    """
+    if not db_store.get_session_detail(sid):
+        raise HTTPException(status_code=404, detail="session not found")
     msgs = db_store.get_messages(sid)
     title = db_store.get_title(sid) or "对话记录"
     lines = [f"# {title}", ""]
