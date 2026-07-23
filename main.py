@@ -411,12 +411,16 @@ async def list_sessions_ep(title: str = "", limit: int = 0):
 
 @app.get("/api/sessions/{sid}")
 async def get_session_ep(sid: str):
-    """获取单个会话的标题与完整消息（用于「打开历史会话」）。"""
-    return {
-        "id": sid,
-        "title": db_store.get_title(sid),
-        "messages": db_store.get_messages(sid),
-    }
+    """获取单个会话的概要（model/created/title/消息数）与完整消息（用于「打开历史会话」）。
+
+    R1 增强：补全 model/created/message_count 概要字段，前端「会话详情」无需
+    再发额外请求；会话不存在时返回 404（而非静默回空列表造成幽灵会话）。
+    """
+    det = db_store.get_session_detail(sid)
+    if not det:
+        raise HTTPException(status_code=404, detail="session not found")
+    det["messages"] = db_store.get_messages(sid)
+    return det
 
 
 @app.post("/api/sessions/{sid}/switch")

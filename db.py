@@ -141,9 +141,12 @@ def get_messages(
         sql += " AND content LIKE ? ESCAPE '\\'"
         params.append(f"%{escaped}%")
     sql += " ORDER BY id"
-    if limit and limit > 0:
-        sql += " LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
+    # R2 修复（隐性分页缺陷）：原实现仅在 limit>0 时追加 LIMIT/OFFSET，
+    # 导致「offset>0 但 limit 未设置」时 OFFSET 子句根本不出现、跳过前 N 条
+    # 静默失效（与分页 UI「跳到某页」的预期不符）。现始终追加 LIMIT/OFFSET，
+    # limit<=0 时用 -1（SQLite 语义：不限）占位，使 offset 始终生效。
+    sql += " LIMIT ? OFFSET ?"
+    params.extend([limit if (limit and limit > 0) else -1, max(0, offset)])
     conn = _conn()
     try:
         rows = conn.execute(sql, params).fetchall()
@@ -190,6 +193,32 @@ def get_model(sid: str) -> str:
     finally:
         conn.close()
     return row[0] if row else ""
+
+
+def get_session_detail(sid: str) -> "dict | None":
+    """返回单个会话的概要（id/model/created/title/message_count）。
+
+    R1 新能力：补全单会话详情视图——此前 get_session_ep 只能拿到
+    id/title/messages，缺 model/created/消息数，前端「会话详情」面板
+    需额外再发请求补全。现一次给出概要；会话不存在返回 None
+    （供端点返回 404，而非静默回空列表造成「幽灵会话」）。
+    """
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT id, model, created, title FROM sessions WHERE id=?", (sid,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "model": row[1] or "",
+        "created": row[2],
+        "title": row[3] or "",
+        "message_count": count_messages(sid),
+    }
 
 
 def new_session() -> str:

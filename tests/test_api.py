@@ -984,3 +984,48 @@ def test_append_message_missing_session_404():
     r = c.post("/api/sessions/nonexistent_sid/messages",
                json={"role": "user", "content": "x"})
     assert r.status_code == 404
+
+
+def test_get_session_detail_metadata_and_404():
+    """R1 验证：GET /api/sessions/{sid} 返回 model/created/message_count 概要；
+    会话不存在返回 404（而非幽灵空列表）。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "DETAIL_MARKER"}]},
+    )
+    r = c.get(f"/api/sessions/{sid}")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["id"] == sid
+    assert "DETAIL_MARKER" in d["title"]
+    assert "model" in d and "created" in d and "message_count" in d
+    assert d["message_count"] == 1
+    assert any("DETAIL_MARKER" in (m.get("content") or "") for m in d["messages"])
+    # 缺失会话 -> 404
+    r2 = c.get("/api/sessions/does_not_exist_id")
+    assert r2.status_code == 404
+
+
+def test_get_messages_offset_without_limit():
+    """R2 验证：offset 在 limit 未设置时必须生效（此前被静默丢弃）。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    hist = []
+    for i in range(4):
+        hist.append({"role": "user", "content": f"Q{i}"})
+        hist.append({"role": "assistant", "content": f"A{i}"})
+        c.post("/api/chat", json={"model": "mock", "messages": list(hist)})
+    # 不限 limit，仅 offset=4 -> 应跳过前 4 条（按 id 升序）
+    r = c.get(f"/api/sessions/{sid}/messages?offset=4")
+    assert r.status_code == 200
+    msgs = r.json()["messages"]
+    assert len(msgs) == 4  # 共 8 条，跳过 4 条剩 4 条
+    # offset 生效：跳过前 4 条(Q0/A0/Q1/A1)，首条应为 Q2
+    assert "Q2" in msgs[0]["content"]
+
+
+def test_db_get_session_detail_none_for_missing():
+    """R1 回归：db.get_session_detail 对缺失会话返回 None。"""
+    assert main.db_store.get_session_detail("no_such_session") is None
