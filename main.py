@@ -485,8 +485,12 @@ async def cleanup_sessions_ep(keep: int = 10):
 
 
 @app.get("/api/sessions/{sid}/export")
-async def export_session_ep(sid: str):
+async def export_session_ep(sid: str, format: str = "md"):
     """将会话导出为 Markdown 文本（便于存档 / 分享），原样返回消息流转。
+
+    format：导出格式，默认 "md"（人读 Markdown）；"json" 时返回
+    结构化 JSON（id / title / messages 列表），与 md 互补——便于程序化
+    消费、跨系统迁移、或对接下游分析管线，无需再解析 Markdown。
 
     R2 修复（隐性一致性缺陷）：原实现对不存在的会话也返回 200 与一段空
     「对话记录」Markdown，与 get_session_ep（缺失即 404）行为不一致，
@@ -496,6 +500,9 @@ async def export_session_ep(sid: str):
         raise HTTPException(status_code=404, detail="session not found")
     msgs = db_store.get_messages(sid)
     title = db_store.get_title(sid) or "对话记录"
+    # R1 新能力：format=json 直接返回结构化消息列表，机器可读。
+    if format == "json":
+        return {"ok": True, "id": sid, "title": title, "messages": msgs}
     lines = [f"# {title}", ""]
     for m in msgs:
         role = m.get("role", "")

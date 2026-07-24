@@ -288,6 +288,31 @@ def test_export_session_returns_markdown():
     assert md.startswith("#")
 
 
+def test_export_session_returns_json():
+    """R1 新需求验证：GET /api/sessions/{sid}/export?format=json 返回结构化消息列表。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "导出JSON问题"}]},
+    )
+    r = c.get(f"/api/sessions/{sid}/export?format=json")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["id"] == sid
+    assert isinstance(body["messages"], list) and len(body["messages"]) >= 1
+    assert any(m.get("role") == "user" and "导出JSON问题" in m.get("content", "")
+                   for m in body["messages"])
+
+
+def test_export_session_missing_404():
+    """R2 一致性：不存在会话导出仍 404（与 get_session 对齐）。"""
+    c = TestClient(main.app)
+    r = c.get("/api/sessions/nope/export?format=json")
+    assert r.status_code == 404
+
+
 def test_session_messages_pagination():
     """R1 新需求验证：GET /api/sessions/{sid}/messages 支持 limit/offset 分页。"""
     c = TestClient(main.app)
