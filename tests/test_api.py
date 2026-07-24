@@ -1238,3 +1238,13 @@ def test_append_title_after_assistant_first():
     main.db_store.append_message(sid, "user", "我的第一个真实问题")
     # 修复前标题停留在空/「新对话」；修复后派生自首条 user 消息
     assert main.db_store.get_title(sid) == "我的第一个真实问题"
+
+
+def test_api_version():
+    """R1 验证：/api/version 暴露应用名与版本，便于前端展示与流水线断言。"""
+    c = TestClient(main.app)
+    r = c.get("/api/version")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["name"] == "OpenWebUI Lite"
+    assert data["version"] == "0.2.0"

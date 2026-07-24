@@ -136,6 +136,7 @@
     </select>
     <button id="saveDefaultBtn" class="ghost" title="把当前模型设为默认（重启后自动选中）">★ 默认</button>
     <span id="status">连接中</span>
+    <span id="appVersion" class="sub" title="应用版本"></span>
     <button id="newBtn" class="ghost" title="新对话">新对话</button>
   </header>
 
@@ -534,7 +535,18 @@ async function loadHistory() {
   } catch (e) { /* 历史加载失败不阻断主流程 */ }
 }
 
+async function loadVersion() {
+  try {
+    const resp = await fetch("/api/version");
+    const data = await resp.json();
+    $("appVersion").textContent = "v" + (data.version || "");
+  } catch (e) {
+    $("appVersion").textContent = "";
+  }
+}
+
 loadModels();
+loadVersion();
 loadHistory();
 loadSettings();
 loadSessions();

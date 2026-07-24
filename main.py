@@ -264,6 +264,17 @@ async def health():
     }
 
 
+@app.get("/api/version")
+async def version():
+    """R1 新能力：暴露应用版本与标题，便于前端展示与脚本/流水线断言（如灰度发布
+    比对、健康检查附带版本），与 FastAPI 声明的 version 单一来源保持一致。"""
+    return {
+        "name": app.title,
+        "version": app.version,
+        "mock": MOCK_LLM,
+    }
+
+
 @app.get("/api/stats")
 async def stats():
     """全局统计（可观测性）：会话总数、消息总数、当前会话 id。"""
