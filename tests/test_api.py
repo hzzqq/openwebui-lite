@@ -1155,6 +1155,50 @@ def test_regenerate_empty_session_returns_400():
     assert r.status_code == 400
 
 
+def test_regenerate_passes_generation_params(monkeypatch):
+    """R2 验证：regenerate 的 temperature/max_tokens/top_p 查询参数应透传到
+    Ollama options 载荷，与 chat 生成策略保持一致（此前被静默忽略）。"""
+    import json as _json
+
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    main.db_store.save_messages(sid, [
+        {"role": "user", "content": "初次提问"},
+        {"role": "assistant", "content": "旧回答"},
+    ])
+
+    captured = {}
+
+    async def fake_ollama(model, messages, temperature=None, max_tokens=None, top_p=None):
+        captured["options"] = {
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": top_p,
+        }
+        yield main._sse("token", _json.dumps("new", ensure_ascii=False))
+        yield main._sse("done", _json.dumps({"ok": True}, ensure_ascii=False))
+
+    monkeypatch.setattr(main, "MOCK_LLM", False)
+    monkeypatch.setattr(main, "_ollama_stream", fake_ollama)
+    r = c.post(
+        f"/api/sessions/{sid}/regenerate?temperature=0.5&max_tokens=128&top_p=0.9"
+    )
+    assert r.status_code == 200
+    assert captured["options"]["temperature"] == 0.5
+    assert captured["options"]["max_tokens"] == 128
+    assert captured["options"]["top_p"] == 0.9
+
+
+def test_build_ollama_options_only_emits_provided():
+    """R1 纯函数验证：_build_ollama_options 仅附加显式传入的参数，空时返回空 dict。"""
+    assert main._build_ollama_options() == {}
+    assert main._build_ollama_options(temperature=0.3) == {"temperature": 0.3}
+    full = main._build_ollama_options(temperature=0.3, max_tokens=100, top_p=0.8)
+    assert full == {"temperature": 0.3, "max_tokens": 100, "top_p": 0.8}
+    # 仅 top_p 时不应混入其余两个
+    assert main._build_ollama_options(top_p=0.5) == {"top_p": 0.5}
+
+
 def test_delete_title_source_rederives_title():
     """R2 修复验证：删除作为标题来源的首条 user 消息后，标题应重新派生。"""
     c = TestClient(main.app)

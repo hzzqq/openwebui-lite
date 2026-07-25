@@ -135,6 +135,23 @@ async def _mock_stream(user_msg: str) -> str:
     yield _sse("done", json.dumps({"ok": True}, ensure_ascii=False))
 
 
+def _build_ollama_options(temperature=None, max_tokens=None, top_p=None) -> "dict":
+    """把生成参数收敛为 Ollama options 字典（仅当显式传入时附加，避免覆盖模型默认）。
+
+    R1 抽出的纯函数：chat 与 regenerate 两条生成链路共用同一套「参数 -> options」
+    映射，保证两者对 temperature / max_tokens / top_p 的透传口径完全一致（DRY + 一致性）。
+    空 options 时返回空 dict，调用方据此决定是否附加。
+    """
+    options: Dict[str, object] = {}
+    if temperature is not None:
+        options["temperature"] = temperature
+    if max_tokens is not None:
+        options["max_tokens"] = max_tokens
+    if top_p is not None:
+        options["top_p"] = top_p
+    return options
+
+
 async def _ollama_stream(model: str, messages: List[Dict], temperature=None, max_tokens=None, top_p=None) -> str:
     """转发到 Ollama /api/chat（stream=true），增量 token 推给前端。
 
@@ -142,13 +159,7 @@ async def _ollama_stream(model: str, messages: List[Dict], temperature=None, max
     让用户/调用方控制生成温度、长度与核采样（仅当显式传入时附加，避免覆盖模型默认）。
     """
     payload = {"model": model, "messages": messages, "stream": True}
-    options = {}
-    if temperature is not None:
-        options["temperature"] = temperature
-    if max_tokens is not None:
-        options["max_tokens"] = max_tokens
-    if top_p is not None:
-        options["top_p"] = top_p
+    options = _build_ollama_options(temperature, max_tokens, top_p)
     if options:
         payload["options"] = options
     try:
@@ -620,13 +631,20 @@ async def edit_message_ep(mid: int, req: EditMessageRequest):
 
 
 @app.post("/api/sessions/{sid}/regenerate")
-async def regenerate_ep(sid: str):
+async def regenerate_ep(sid: str, temperature: "float | None" = None, max_tokens: "int | None" = None, top_p: "float | None" = None):
     """重新生成最后一条助手回复（常见聊天 UX：对上一条回答不满意时重答）。
 
     R1 新能力：若会话末尾是助手回复，先删除它再基于其前的历史重新生成；
     若末尾是用户消息，则直接为其补一条新助手回复。生成复用与 chat 相同的
     SSE / Mock 链路，并在流结束后把新回复落盘，保证「重新生成」后历史持久化一致。
     会话不存在 / 无消息 / 无用户上下文时返回 400。
+
+    R2 修复（隐性能力不一致）：原实现重新生成时直接调用
+    `_ollama_stream(model, history)`，**完全忽略了** chat 已支持的
+    temperature / max_tokens / top_p 生成参数——用户在前端调过低温度/限长后，
+    点「重新生成」却以模型默认参数生成，行为与 chat 脱节。现通过查询参数
+    temperature / max_tokens / top_p 透传同一套 options（与 chat 共用
+    _build_ollama_options，保证口径一致），让重生成与首答遵循相同生成策略。
     """
     msgs = db_store.get_messages(sid)
     if not msgs:
@@ -658,7 +676,10 @@ async def regenerate_ep(sid: str):
             if not model:
                 yield _sse("error", json.dumps("请先选择或输入模型名称", ensure_ascii=False))
                 return
-            gen = _ollama_stream(model, history)
+            gen = _ollama_stream(
+                model, history,
+                temperature=temperature, max_tokens=max_tokens, top_p=top_p
+            )
         async for chunk in gen:
             # 从 token 事件抽取文本，留待流结束后落盘
             if "data: " in chunk:
