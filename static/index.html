@@ -79,6 +79,11 @@
   .msg.user { flex-direction: row-reverse; }
   .msg.user .bubble { background: var(--user-bubble); }
   .msg.bot .bubble { background: var(--bot-bubble); }
+  .msg .copy {
+    align-self: flex-end; font-size: 11px; color: var(--muted);
+    background: transparent; border: 1px solid var(--border); padding: 2px 6px;
+  }
+  .msg .copy:hover { color: var(--text); }
   .cursor::after { content: "▋"; color: var(--accent); animation: blink 1s steps(1) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
 
@@ -152,7 +157,7 @@
     </aside>
 
     <main id="main">
-      <div class="messages" id="messages">
+      <div class="messages" id="messages" role="log" aria-live="polite" aria-label="对话消息">
         <div class="empty" id="empty">
           <h2>开始你的第一段对话</h2>
           <div>在下方输入消息，或先用右上角选择本地模型。无 Ollama 时可用 MOCK 模式演示。</div>
@@ -165,6 +170,7 @@
     <div class="composer">
       <textarea id="input" placeholder="输入消息，Enter 发送，Shift+Enter 换行…"></textarea>
       <button id="stopBtn" class="danger" style="display:none">停止</button>
+      <button id="regenBtn" class="ghost" style="display:none" title="重新生成上一条助手回复">↻ 重新生成</button>
       <button id="sendBtn" class="primary">发送</button>
     </div>
   </footer>
@@ -185,7 +191,6 @@ function downloadText(filename, text) {
   URL.revokeObjectURL(url);
 }
 const messagesEl = $("messages");
-const emptyEl = $("empty");
 const inputEl = $("input");
 const modelSelect = $("modelSelect");
 const statusEl = $("status");
@@ -194,13 +199,20 @@ let conversation = []; // {role, content}
 let streaming = false;
 let controller = null;   // AbortController，用于停止生成
 let savedStatus = null; // 记录模型状态，生成结束后恢复
+let currentSessionId = null; // 当前会话 id（与后端同步，供重新生成/导出）
+
+// 隐藏当前「空状态」占位：按 id 动态查询，避免引用已被 innerHTML 替换的旧节点
+function hideEmpty() {
+  const e = document.getElementById("empty");
+  if (e) e.style.display = "none";
+}
 
 function scrollBottom() {
   $("main").scrollTop = $("main").scrollHeight;
 }
 
 function addMessage(role, content) {
-  if (emptyEl) emptyEl.style.display = "none";
+  hideEmpty();
   const wrap = document.createElement("div");
   wrap.className = "msg " + (role === "user" ? "user" : "bot");
   const avatar = document.createElement("div");
@@ -209,8 +221,21 @@ function addMessage(role, content) {
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   bubble.textContent = content || "";
+  const copy = document.createElement("button");
+  copy.className = "copy";
+  copy.type = "button";
+  copy.textContent = "复制";
+  copy.title = "复制此条消息";
+  copy.addEventListener("click", () => {
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(content || "").then(
+      () => { copy.textContent = "已复制"; setTimeout(() => (copy.textContent = "复制"), 1200); },
+      () => { copy.textContent = "复制失败"; }
+    );
+  });
   wrap.appendChild(avatar);
   wrap.appendChild(bubble);
+  wrap.appendChild(copy);
   messagesEl.appendChild(wrap);
   scrollBottom();
   return bubble;
@@ -294,6 +319,7 @@ async function send() {
   // 切换为「停止」按钮 + 生成中状态
   $("sendBtn").style.display = "none";
   $("stopBtn").style.display = "";
+  $("regenBtn").style.display = "none";
   statusEl.textContent = "生成中…";
   statusEl.className = "mock";
 
@@ -358,6 +384,91 @@ async function send() {
       statusEl.textContent = savedStatus.text;
       statusEl.className = savedStatus.cls;
     }
+    refreshRegenBtn();
+    scrollBottom();
+  }
+}
+
+function refreshRegenBtn() {
+  // 仅当存在至少一条助手回复时，才允许「重新生成」
+  const hasBot = conversation.some((m) => m.role === "bot");
+  $("regenBtn").style.display = hasBot ? "" : "none";
+}
+
+async function regenerate() {
+  if (streaming || !currentSessionId) return;
+  // 定位最后一条助手回复（本地）并移除，交给后端重新生成
+  let idx = -1;
+  for (let i = conversation.length - 1; i >= 0; i--) {
+    if (conversation[i].role === "bot") { idx = i; break; }
+  }
+  if (idx === -1) return;
+  conversation = conversation.slice(0, idx);
+  const bots = messagesEl.querySelectorAll(".msg.bot");
+  if (bots.length) bots[bots.length - 1].remove();
+
+  const bubble = addMessage("bot", "");
+  bubble.classList.add("cursor");
+  streaming = true;
+  controller = new AbortController();
+  $("sendBtn").style.display = "none";
+  $("regenBtn").style.display = "none";
+  statusEl.textContent = "重新生成中…";
+  statusEl.className = "mock";
+
+  try {
+    const resp = await fetch("/api/sessions/" + currentSessionId + "/regenerate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: getModel() }),
+      signal: controller.signal,
+    });
+    if (!resp.ok) {
+      bubble.classList.remove("cursor");
+      bubble.textContent = "重新生成失败：" + resp.status;
+      streaming = false;
+      return;
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buf = "", acc = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let si;
+      while ((si = buf.indexOf("\n\n")) !== -1) {
+        const raw = buf.slice(0, si);
+        buf = buf.slice(si + 2);
+        const evMatch = raw.match(/^event: (.+)$/m);
+        const dataMatch = raw.match(/^data: (.+)$/m);
+        if (!dataMatch) continue;
+        const event = evMatch ? evMatch[1] : "message";
+        let payload;
+        try { payload = JSON.parse(dataMatch[1]); } catch { continue; }
+        if (event === "token") {
+          acc += payload;
+          bubble.textContent = acc;
+          scrollBottom();
+        } else if (event === "done") {
+          bubble.classList.remove("cursor");
+        } else if (event === "error") {
+          bubble.classList.remove("cursor");
+          bubble.textContent = "错误：" + payload;
+        }
+      }
+    }
+    conversation.push({ role: "bot", content: acc });
+  } catch (e) {
+    bubble.classList.remove("cursor");
+    bubble.textContent = "连接异常：" + e.message;
+  } finally {
+    bubble.classList.remove("cursor");
+    streaming = false;
+    controller = null;
+    $("sendBtn").style.display = "";
+    refreshRegenBtn();
+    if (savedStatus) { statusEl.textContent = savedStatus.text; statusEl.className = savedStatus.cls; }
     scrollBottom();
   }
 }
@@ -393,6 +504,7 @@ async function loadSessions() {
     const data = await resp.json();
     const sessions = data.sessions || [];
     const current = data.current;
+    currentSessionId = current;
     if (!sessions.length) {
       listEl.innerHTML = '<div class="session-empty">暂无历史会话</div>';
       return;
@@ -433,9 +545,22 @@ async function loadSessions() {
           downloadText((data.title || "session") + ".md", data.markdown || "");
         } catch (e) {}
       });
+      const expJson = document.createElement("button");
+      expJson.className = "del";
+      expJson.textContent = "🗎";
+      expJson.title = "导出会话为 JSON";
+      expJson.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        try {
+          const r = await fetch("/api/sessions/" + s.id + "/export?format=json");
+          const data = await r.json();
+          downloadText((data.title || "session") + ".json", JSON.stringify(data, null, 2), "application/json;charset=utf-8");
+        } catch (e) {}
+      });
       item.appendChild(title);
       item.appendChild(meta);
       item.appendChild(exp);
+      item.appendChild(expJson);
       item.appendChild(del);
       item.addEventListener("click", () => switchSession(s.id));
       listEl.appendChild(item);
@@ -447,6 +572,7 @@ async function loadSessions() {
 
 async function switchSession(id) {
   if (streaming) return;
+  currentSessionId = id;
   try {
     await fetch("/api/sessions/" + id + "/switch", { method: "POST" });
   } catch (e) {}
@@ -464,7 +590,7 @@ async function switchSession(id) {
       e.innerHTML = "<h2>开始你的第一段对话</h2><div>在下方输入消息开始。</div>";
       messagesEl.appendChild(e);
     } else {
-      if (emptyEl) emptyEl.style.display = "none";
+      hideEmpty();
       for (const m of msgs) {
         addMessage(m.role, m.content || "");
         conversation.push({ role: m.role, content: m.content || "" });
@@ -473,12 +599,14 @@ async function switchSession(id) {
     const firstUser = msgs.find((m) => m.role === "user");
     if (firstUser) updateTitle(firstUser.content);
     if (data.model) setModelName(data.model);
+    refreshRegenBtn();
   } catch (e) {}
 }
 
 // 事件绑定
 $("sendBtn").addEventListener("click", send);
 $("stopBtn").addEventListener("click", stopGen);
+$("regenBtn").addEventListener("click", regenerate);
 $("newBtn").addEventListener("click", newChat);
 $("newBtn2").addEventListener("click", newChat);
 $("saveDefaultBtn").addEventListener("click", saveDefaultModel);
@@ -523,7 +651,7 @@ async function loadHistory() {
     const data = await resp.json();
     const msgs = data.messages || [];
     if (!msgs.length) return;
-    if (emptyEl) emptyEl.style.display = "none";
+    hideEmpty();
     conversation = [];
     for (const m of msgs) {
       addMessage(m.role, m.content || "");
@@ -532,6 +660,7 @@ async function loadHistory() {
     if (data.model) setModelName(data.model);
     const firstUser = msgs.find((m) => m.role === "user");
     if (firstUser) updateTitle(firstUser.content);
+    refreshRegenBtn();
   } catch (e) { /* 历史加载失败不阻断主流程 */ }
 }
 
