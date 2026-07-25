@@ -16,16 +16,20 @@ OpenWebUI Lite — 对接本地 Ollama 的轻量 LLM 聊天前端 MVP
 """
 
 import json
+import logging
 import os
 import time
 from typing import Dict, List, Literal
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 import db as db_store  # SQLite 会话持久化
+from log_utils import setup_logging
+
+log = logging.getLogger("openwebui")
 
 # ---------- 配置 ----------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,7 +37,28 @@ STATIC_INDEX = os.path.join(BASE_DIR, "static", "index.html")
 OLLAMA_BASE = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 MOCK_LLM = os.getenv("MOCK_LLM", "0") == "1"
 
+# R1 新能力：诊断日志（访问/错误）写 stderr 或 OPENWEBUI_LOG_FILE，不污染 stdout。
+# 级别由 OPENWEBUI_LOG_LEVEL 控制（DEBUG/INFO/WARNING/ERROR），默认 INFO。
+try:
+    setup_logging(
+        os.getenv("OPENWEBUI_LOG_LEVEL", "INFO"),
+        os.getenv("OPENWEBUI_LOG_FILE"),
+    )
+except Exception:
+    pass
+
 app = FastAPI(title="OpenWebUI Lite", version="0.2.0")
+
+
+@app.middleware("http")
+async def access_log_middleware(request: Request, call_next):
+    """R1 新能力：请求级访问日志（方法 + 路径 + 状态码 + 耗时），便于线上排查慢请求/异常。"""
+    start = time.time()
+    response = await call_next(request)
+    elapsed_ms = round((time.time() - start) * 1000, 1)
+    log.info("%s %s -> %d (%sms)", request.method, request.url.path, response.status_code, elapsed_ms)
+    return response
+
 
 # 启动时初始化 SQLite（表结构幂等）
 db_store.init()
@@ -736,4 +761,5 @@ if __name__ == "__main__":
     print("OpenWebUI Lite 启动中…")
     print(f"  MOCK_LLM = {MOCK_LLM}")
     print(f"  OLLAMA_HOST = {OLLAMA_BASE}")
+    log.info("OpenWebUI Lite 启动 MOCK_LLM=%s OLLAMA_HOST=%s", MOCK_LLM, OLLAMA_BASE)
     uvicorn.run(app, host="0.0.0.0", port=8000)
