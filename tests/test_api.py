@@ -1317,3 +1317,34 @@ def test_api_version():
     data = r.json()
     assert data["name"] == "OpenWebUI Lite"
     assert data["version"] == "0.2.0"
+
+
+def test_cors_headers_present_with_origin():
+    """R1 新需求验证：带 Origin 的请求应返回 CORS 响应头（允许跨域调用）。"""
+    c = TestClient(main.app)
+    r = c.get("/api/models", headers={"Origin": "http://example.com"})
+    assert r.status_code == 200
+    assert r.headers.get("access-control-allow-origin") == "*"
+
+
+def test_cors_preflight_allowed():
+    """R1 验证：OPTIONS 预检请求返回 200 并带允许的 methods/headers 头。"""
+    c = TestClient(main.app)
+    r = c.options(
+        "/api/chat",
+        headers={
+            "Origin": "http://example.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert r.status_code == 200
+    assert "access-control-allow-methods" in r.headers
+
+
+def test_chat_empty_messages_returns_422():
+    """R2 健壮性验证：空 messages 在边界即拦截为 422，不把空请求打到 LLM。"""
+    c = TestClient(main.app)
+    c.post("/api/new")
+    r = c.post("/api/chat?stream=0", json={"messages": []})
+    assert r.status_code == 422
+    assert "messages" in r.json().get("detail", "").lower() or "不能为空" in r.json().get("detail", "")

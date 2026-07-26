@@ -23,6 +23,7 @@ from typing import Dict, List, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -48,6 +49,19 @@ except Exception:
     pass
 
 app = FastAPI(title="OpenWebUI Lite", version="0.2.0")
+
+# R1 新能力：可配置 CORS，便于外部工具 / 不同端口的前端跨域调用本地 LLM。
+# 由 OPENWEBUI_CORS_ORIGINS 控制（逗号分隔；默认 "*" 允许全部，适合本地开发）；
+# 设为具体源可收紧。凭据仅在非通配时才开启（通配 + 凭据在 CORS 规范下无效）。
+_CORS_ENV = os.getenv("OPENWEBUI_CORS_ORIGINS", "*")
+_CORS_ORIGINS = [o.strip() for o in _CORS_ENV.split(",") if o.strip()] or ["*"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS_ORIGINS,
+    allow_credentials="*" not in _CORS_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.middleware("http")
@@ -340,6 +354,10 @@ async def search(q: str = "", limit: int = 50, role: str = ""):
 @app.post("/api/chat")
 async def chat(req: ChatRequest, stream: bool = True):
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
+    # R2 健壮性：空消息体对 LLM 无意义，且会把空请求打到 Ollama 触发 400；
+    # 在边界即拦截为 422，明确提示而非透传底层错误。
+    if not messages:
+        raise HTTPException(status_code=422, detail="messages 不能为空")
 
     sid = _current_sid()
     # R1 新能力：模型解析优先级 请求显式 model > 本会话已存模型(per-session) >

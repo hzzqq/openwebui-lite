@@ -4,3 +4,6 @@ __pycache__/
 sessions.db
 sessions.db-wal
 sessions.db-shm
+
+# pytest 临时目录（verify_all.py 固定 basetemp）
+.pytest_tmp/
