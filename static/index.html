@@ -505,6 +505,8 @@ async function loadSessions() {
     const sessions = data.sessions || [];
     const current = data.current;
     currentSessionId = current;
+    // 置顶会话排在最前（后端已按 pinned DESC 排，这里双保险并便于切换后即时重排）
+    sessions.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
     if (!sessions.length) {
       listEl.innerHTML = '<div class="session-empty">暂无历史会话</div>';
       return;
@@ -559,6 +561,19 @@ async function loadSessions() {
       });
       item.appendChild(title);
       item.appendChild(meta);
+      const pin = document.createElement("button");
+      pin.className = "del";
+      pin.textContent = s.pinned ? "📌" : "📍";
+      pin.title = s.pinned ? "取消置顶" : "置顶会话";
+      pin.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        try {
+          await fetch("/api/sessions/" + s.id + "/pin?pinned=" + (!s.pinned),
+                      { method: "POST" });
+        } catch (e) {}
+        loadSessions();
+      });
+      item.appendChild(pin);
       item.appendChild(exp);
       item.appendChild(expJson);
       item.appendChild(del);

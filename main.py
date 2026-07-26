@@ -549,6 +549,20 @@ async def cleanup_sessions_ep(keep: int = 10):
     return {"ok": True, "removed": removed, "current": _current_sid()}
 
 
+@app.post("/api/sessions/{sid}/pin")
+async def pin_session_ep(sid: str, pinned: bool = True):
+    """置顶/取消置顶某会话（收藏夹语义）。
+
+    R1 新能力：会话多时把重要会话钉在列表顶部（同类产品标配）。
+    pinned 经查询参数传入（默认 True 置顶；?pinned=false 取消置顶）。
+    会话不存在返回 404（与 set_pin 口径一致）。
+    """
+    res = db_store.set_pin(sid, pinned)
+    if res is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return {"ok": True, **res}
+
+
 @app.get("/api/sessions/{sid}/export")
 async def export_session_ep(sid: str, format: str = "md"):
     """将会话导出为 Markdown 文本（便于存档 / 分享），原样返回消息流转。

@@ -57,6 +57,11 @@ def init() -> None:
             conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
         except Exception:
             pass
+        # 迁移：补 pinned 列（会话置顶/收藏；旧库兼容，已存在则忽略）
+        try:
+            conn.execute("ALTER TABLE sessions ADD COLUMN pinned INTEGER")
+        except Exception:
+            pass
         conn.commit()
     finally:
         conn.close()
@@ -206,7 +211,7 @@ def get_session_detail(sid: str) -> "dict | None":
     conn = _conn()
     try:
         row = conn.execute(
-            "SELECT id, model, created, title FROM sessions WHERE id=?", (sid,)
+            "SELECT id, model, created, title, COALESCE(pinned,0) FROM sessions WHERE id=?", (sid,)
         ).fetchone()
     finally:
         conn.close()
@@ -217,6 +222,7 @@ def get_session_detail(sid: str) -> "dict | None":
         "model": row[1] or "",
         "created": row[2],
         "title": row[3] or "",
+        "pinned": bool(row[4]),
         "message_count": count_messages(sid),
     }
 
@@ -337,6 +343,30 @@ def get_title(sid: str) -> str:
     return row[0] if row else ""
 
 
+def set_pin(sid: str, pinned: bool) -> "dict | None":
+    """置顶/取消置顶某会话（收藏夹语义）。
+
+    R1 新能力：会话多时用户需要把「重要/进行中」的会话钉在列表顶部，
+    同类产品（OpenWebUI 等）标配。pinned 存于 sessions 表，
+    列表/检索默认按「置顶优先 + 时间倒序」排列，无需前端额外排序。
+
+    R2 一致性：与 set_title / set_model 同口径——不存在的会话返回 None，
+    供端点返回 404（而非静默成功、让前端误以为已置顶）。
+    """
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT id FROM sessions WHERE id=?", (sid,)).fetchone()
+        if not row:
+            return None
+        conn.execute(
+            "UPDATE sessions SET pinned=? WHERE id=?", (1 if pinned else 0, sid)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": sid, "pinned": bool(pinned)}
+
+
 def list_sessions(limit: "int | None" = None) -> list[dict]:
     """列出全部会话（含消息数），用于多会话管理 UI。
 
@@ -349,11 +379,12 @@ def list_sessions(limit: "int | None" = None) -> list[dict]:
     conn = _conn()
     try:
         sql = (
-            "SELECT s.id, s.model, s.created, s.title, COALESCE(m.cnt, 0) "
+            "SELECT s.id, s.model, s.created, s.title, COALESCE(m.cnt, 0), "
+            "COALESCE(s.pinned, 0) "
             "FROM sessions s "
             "LEFT JOIN (SELECT session_id, COUNT(*) AS cnt FROM messages GROUP BY session_id) m "
             "ON m.session_id = s.id "
-            "ORDER BY s.created DESC"
+            "ORDER BY COALESCE(s.pinned, 0) DESC, s.created DESC"
         )
         params: list = []
         if limit and limit > 0:
@@ -363,13 +394,14 @@ def list_sessions(limit: "int | None" = None) -> list[dict]:
     finally:
         conn.close()
     out = []
-    for sid, model, created, title, cnt in rows:
+    for sid, model, created, title, cnt, pinned in rows:
         out.append(
             {
                 "id": sid,
                 "model": model,
                 "created": created,
                 "title": title or "",
+                "pinned": bool(pinned),
                 "message_count": cnt,
             }
         )
@@ -390,24 +422,26 @@ def search_sessions(q: str, limit: int = 50) -> list[dict]:
     conn = _conn()
     try:
         rows = conn.execute(
-            "SELECT s.id, s.model, s.created, s.title, COALESCE(m.cnt, 0) "
+            "SELECT s.id, s.model, s.created, s.title, COALESCE(m.cnt, 0), "
+            "COALESCE(s.pinned, 0) "
             "FROM sessions s "
             "LEFT JOIN (SELECT session_id, COUNT(*) AS cnt FROM messages GROUP BY session_id) m "
             "ON m.session_id = s.id "
             "WHERE s.title LIKE ? ESCAPE '\\' "
-            "ORDER BY s.created DESC LIMIT ?",
+            "ORDER BY COALESCE(s.pinned, 0) DESC, s.created DESC LIMIT ?",
             (like, limit),
         ).fetchall()
     finally:
         conn.close()
     out = []
-    for sid, model, created, title, cnt in rows:
+    for sid, model, created, title, cnt, pinned in rows:
         out.append(
             {
                 "id": sid,
                 "model": model,
                 "created": created,
                 "title": title or "",
+                "pinned": bool(pinned),
                 "message_count": cnt,
             }
         )
@@ -520,23 +554,6 @@ def delete_session(sid: str) -> str:
     if get_current_sid() == sid:
         new_session()  # 避免 current 指针悬空
     return get_current_sid()
-
-
-def clear_messages(sid: str) -> None:
-    """清空某会话的全部消息，但保留会话本身（标题重置为「新对话」）。
-
-    与 delete_session 的区别：删除会移除整个会话；清空只重置对话内容，
-    便于在不丢失会话列表/位置的前提下重新开始一轮新对话。
-    """
-    conn = _conn()
-    try:
-        conn.execute("DELETE FROM messages WHERE session_id=?", (sid,))
-        conn.execute(
-            "UPDATE sessions SET title='新对话' WHERE id=?", (sid,)
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def delete_message(mid: int) -> "dict | None":

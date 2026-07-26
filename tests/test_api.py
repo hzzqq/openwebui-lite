@@ -298,6 +298,34 @@ def test_clear_messages_endpoint_resets_title_and_404():
     assert r404.status_code == 404
 
 
+def test_pin_session_orders_and_404():
+    """R1 新需求验证：POST /api/sessions/{sid}/pin 置顶 + 列表置顶优先 + 404。"""
+    c = TestClient(main.app)
+    sid_a = c.post("/api/new").json()["session_id"]
+    sid_b = c.post("/api/new").json()["session_id"]
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "B 会话"}]},
+    )
+    # 置顶 B（后建的）
+    r = c.post(f"/api/sessions/{sid_b}/pin")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["pinned"] is True
+    # 列表应按「置顶优先」排列：B 在 A 之前
+    sids = [s["id"] for s in c.get("/api/sessions").json()["sessions"]]
+    assert sids.index(sid_b) < sids.index(sid_a)
+    # 详情带 pinned 字段
+    det = c.get(f"/api/sessions/{sid_b}").json()
+    assert det["pinned"] is True
+    # 取消置顶
+    r2 = c.post(f"/api/sessions/{sid_b}/pin?pinned=false")
+    assert r2.json()["pinned"] is False
+    # 不存在的会话返回 404
+    r404 = c.post("/api/sessions/nope/pin")
+    assert r404.status_code == 404
+
+
 def test_export_session_returns_markdown():
     """R1 新需求验证：GET /api/sessions/{sid}/export 返回 Markdown 会话记录。"""
     c = TestClient(main.app)
