@@ -1,0 +1,6 @@
+# 最小化 CI 测试依赖（仅运行 pytest 套件所需）
+# main/db 依赖 fastapi + sqlite(标准库)；TestClient 依赖 httpx。
+pytest>=8.0
+fastapi>=0.110
+httpx>=0.27
+uvicorn>=0.27

@@ -606,6 +606,30 @@ def delete_message(mid: int) -> "dict | None":
             "message_count": cnt, "title": title}
 
 
+def clear_messages(sid: str) -> "dict | None":
+    """删除某会话的全部消息（保留会话本身），并重置标题为哨兵「新对话」。
+
+    R1 新能力：批量清空消息（区别于 delete_session 删除整个会话），
+    适合「保留会话槽位、清空历史」的场景。会话不存在时返回 None（端点 404）；
+    清空后消息归零，标题重置为「新对话」，与 delete_message 的空会话行为一致。
+    """
+    conn = _conn()
+    try:
+        srow = conn.execute("SELECT id FROM sessions WHERE id=?", (sid,)).fetchone()
+        if not srow:
+            return None
+        conn.execute("DELETE FROM messages WHERE session_id=?", (sid,))
+        # R2 一致性：清空后标题重置，避免「空会话顶着旧标题」的错觉
+        conn.execute("UPDATE sessions SET title='新对话' WHERE id=?", (sid,))
+        conn.commit()
+        cnt = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id=?", (sid,)
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    return {"session_id": sid, "message_count": cnt, "title": "新对话"}
+
+
 def update_message(mid: int, content: str) -> "dict | None":
     """编辑单条消息内容（区别于删除/覆盖式保存）。
 

@@ -273,6 +273,31 @@ def test_clear_session_keeps_session_but_wipes_messages():
     assert main.db_store.count_messages(sid) == 0
 
 
+def test_clear_messages_endpoint_resets_title_and_404():
+    """R1 新需求验证：DELETE /api/sessions/{sid}/messages 批量清空并重置标题。"""
+    c = TestClient(main.app)
+    sid = c.post("/api/new").json()["session_id"]
+    c.post(
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "批量清空测试"}]},
+    )
+    assert main.db_store.count_messages(sid) >= 1
+    r = c.delete(f"/api/sessions/{sid}/messages")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["message_count"] == 0
+    assert body["title"] == "新对话"
+    # 会话仍存在（区别于 delete_session）
+    ids = [s["id"] for s in c.get("/api/sessions").json()["sessions"]]
+    assert sid in ids
+    # R2 一致性：清空后该会话无消息
+    assert main.db_store.count_messages(sid) == 0
+    # 不存在的会话返回 404
+    r404 = c.delete("/api/sessions/nope/messages")
+    assert r404.status_code == 404
+
+
 def test_export_session_returns_markdown():
     """R1 新需求验证：GET /api/sessions/{sid}/export 返回 Markdown 会话记录。"""
     c = TestClient(main.app)

@@ -655,6 +655,20 @@ async def edit_message_ep(mid: int, req: EditMessageRequest):
     return {"ok": True, **res}
 
 
+@app.delete("/api/sessions/{sid}/messages")
+async def clear_messages_ep(sid: str):
+    """清空某会话的全部消息（保留会话本身），标题重置为新对话。
+
+    R1 新能力：批量清空消息，区别于删除整个会话（delete_session）。
+    R2 一致性：清空后标题重置为「新对话」，与单条删除致空会话的行为一致；
+    会话不存在返回 404。
+    """
+    res = db_store.clear_messages(sid)
+    if res is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return {"ok": True, **res}
+
+
 @app.post("/api/sessions/{sid}/regenerate")
 async def regenerate_ep(sid: str, temperature: "float | None" = None, max_tokens: "int | None" = None, top_p: "float | None" = None):
     """重新生成最后一条助手回复（常见聊天 UX：对上一条回答不满意时重答）。
