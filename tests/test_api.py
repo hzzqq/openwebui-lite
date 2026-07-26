@@ -58,6 +58,60 @@ def test_new_clears_history():
     assert h.get("messages") == []
 
 
+def test_assistant_reply_survives_reload_like_frontend():
+    """R2 修复回归：单轮对话（发一次就刷新）的助手回复不得丢失。
+
+    后端 chat 契约保持「整体覆盖式保存用户历史」不变（与既有测试一致）；
+    助手回复由前端在流结束后经 append_message 端点回写。这里在 API 层模拟
+    该前端行为：流式拿到助手回复 -> 写回当前会话 -> 模拟刷新重新加载历史，
+    助手回复应仍在。若此链路断，即重现「只发一轮就刷新 → 回复消失」的数据丢失。
+    """
+    import json as _json
+
+    c = TestClient(main.app)
+    c.post("/api/new")
+    sid = c.get("/api/current").json()["session_id"]
+    with c.stream(
+        "POST",
+        "/api/chat",
+        json={"model": "mock", "messages": [{"role": "user", "content": "1+1=?"}]},
+    ) as r:
+        assert r.status_code == 200
+        body = b"".join(r.iter_bytes()).decode("utf-8")
+
+    # 抽取流式 token 拼出助手回复（与前端一致）
+    reply = ""
+    for chunk in body.split("\n\n"):
+        dm = None
+        for line in chunk.splitlines():
+            if line.startswith("data: "):
+                dm = line[6:].strip()
+        if not dm:
+            continue
+        try:
+            payload = _json.loads(dm)
+        except Exception:
+            continue
+        if isinstance(payload, str):
+            reply += payload
+    assert reply.strip(), "未从流中抽到助手回复"
+
+    # 前端行为：把助手回复回写当前会话
+    pa = c.post(
+        f"/api/sessions/{sid}/messages",
+        json={"role": "assistant", "content": reply},
+    )
+    assert pa.status_code == 200
+
+    # 模拟刷新：重新加载历史
+    h = c.get("/api/history").json()
+    msgs = h.get("messages", [])
+    assert any(
+        m.get("role") == "assistant" and m.get("content") == reply
+        for m in msgs
+    ), "单轮对话的助手回复未能在刷新后保留（数据丢失）"
+
+
 def test_health_endpoint():
     c = TestClient(main.app)
     r = c.get("/api/health")

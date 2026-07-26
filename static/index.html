@@ -211,6 +211,18 @@ function scrollBottom() {
   $("main").scrollTop = $("main").scrollHeight;
 }
 
+// 把一条助手/用户消息显式回写当前会话（流结束后持久化，避免单轮对话刷新即丢）
+async function persistAssistant(role, content) {
+  if (!content || !currentSessionId) return;
+  try {
+    await fetch("/api/sessions/" + currentSessionId + "/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: role, content: content }),
+    });
+  } catch (e) { /* 离线/网络异常不阻断聊天主流程 */ }
+}
+
 function addMessage(role, content) {
   hideEmpty();
   const wrap = document.createElement("div");
@@ -370,6 +382,11 @@ async function send() {
     }
     // 把完整回复入栈历史
     conversation.push({ role: "bot", content: acc });
+    // R2 修复数据丢失：后端 chat 仅在「下一轮发送」时靠整体覆盖式保存才把
+    // 助手回复入库；若只发一轮就刷新/关闭页面，助手回复会丢失。这里在前端把
+    // 助手回复显式回写当前会话（复用 append_message 端点），与 regenerate 的
+    // 服务端持久化保持一致，确保单轮对话也能在重启后保留。
+    await persistAssistant("assistant", acc);
   } catch (e) {
     bubble.classList.remove("cursor");
     bubble.textContent = "连接异常：" + e.message;
