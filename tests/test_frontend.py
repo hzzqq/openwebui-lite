@@ -52,10 +52,17 @@ def test_copy_button_present():
 
 def test_script_syntax_valid():
     # 若环境有 node，做语法校验；否则跳过（不视为失败）
-    node = subprocess.run(
-        ["node", "--check", "-"], input=_script().encode("utf-8"),
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    try:
+        node = subprocess.run(
+            ["node", "--check", "-"], input=_script().encode("utf-8"),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        # R2 修复（Windows 可移植性）：POSIX 下找不到 node 返回 127，而
+        # Windows 上 subprocess 直接抛 FileNotFoundError——原先未捕获，
+        # 导致无 node 的 Windows 环境该用例硬失败而非按设计跳过。
+        import pytest
+        pytest.skip("node 不可用，跳过 JS 语法校验")
     if node.returncode == 127:
         import pytest
         pytest.skip("node 不可用，跳过 JS 语法校验")
