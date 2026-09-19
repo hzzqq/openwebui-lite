@@ -381,7 +381,11 @@ async function send() {
       }
     }
     // 把完整回复入栈历史
-    conversation.push({ role: "bot", content: acc });
+    // R2 契约修复：role 必须是后端 MessageItem 允许的 "assistant"。
+    // 原实现入栈 "bot"，第二轮 send() 整体 POST /api/chat 时被 Pydantic
+    // 校验拒绝（422），且 "bot" 永久留在 conversation，之后每次发送都
+    // 422，只能刷新页面（loadHistory 用 DB 的 "assistant"）才能恢复。
+    conversation.push({ role: "assistant", content: acc });
     // R2 修复数据丢失：后端 chat 仅在「下一轮发送」时靠整体覆盖式保存才把
     // 助手回复入库；若只发一轮就刷新/关闭页面，助手回复会丢失。这里在前端把
     // 助手回复显式回写当前会话（复用 append_message 端点），与 regenerate 的
@@ -408,7 +412,9 @@ async function send() {
 
 function refreshRegenBtn() {
   // 仅当存在至少一条助手回复时，才允许「重新生成」
-  const hasBot = conversation.some((m) => m.role === "bot");
+  // R2 修复：conversation 里入栈的是 "assistant"（后端契约），
+  // 原 "bot" 判断使刷新/切换会话后按钮永不出现（hasBot 恒 false）。
+  const hasBot = conversation.some((m) => m.role === "assistant");
   $("regenBtn").style.display = hasBot ? "" : "none";
 }
 
@@ -417,7 +423,7 @@ async function regenerate() {
   // 定位最后一条助手回复（本地）并移除，交给后端重新生成
   let idx = -1;
   for (let i = conversation.length - 1; i >= 0; i--) {
-    if (conversation[i].role === "bot") { idx = i; break; }
+    if (conversation[i].role === "assistant") { idx = i; break; }
   }
   if (idx === -1) return;
   conversation = conversation.slice(0, idx);
@@ -475,7 +481,7 @@ async function regenerate() {
         }
       }
     }
-    conversation.push({ role: "bot", content: acc });
+    conversation.push({ role: "assistant", content: acc });
   } catch (e) {
     bubble.classList.remove("cursor");
     bubble.textContent = "连接异常：" + e.message;

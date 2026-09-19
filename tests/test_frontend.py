@@ -50,6 +50,30 @@ def test_copy_button_present():
     assert 'class = "copy"' in HTML or 'className = "copy"' in HTML, "消息缺少复制按钮"
 
 
+def test_conversation_roles_use_assistant_contract():
+    """R2 契约修复：conversation 入栈必须用后端允许的 role（assistant）。
+
+    原实现把回复以 role:"bot" 入栈，第二轮 send() 整体 POST /api/chat 时被
+    Pydantic 的 Literal["system","user","assistant"] 校验拒绝（422），且 "bot"
+    永久留在 conversation，之后每次发送都 422，只能刷新页面恢复。
+    """
+    assert 'role: "bot", content' not in HTML, "conversation 不得入栈非法 role 'bot'"
+    assert HTML.count('conversation.push({ role: "assistant"') == 2, \
+        "send 与 regenerate 两条链路都应把回复以 'assistant' 入栈"
+    assert 'm.role === "assistant"' in HTML, "refreshRegenBtn 应按 assistant 判断（原 'bot' 判断使刷新后按钮永不出现）"
+
+
+def test_backend_mock_stream_nonblocking():
+    """R2：_mock_stream 在 async 生成器内必须用 await asyncio.sleep 让出控制权。
+
+    阻塞的 time.sleep 会卡死整个事件循环：一次 mock 回复约 5 秒内所有并发
+    请求（health/models/其他会话）全部停摆。
+    """
+    src = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding="utf-8")
+    assert "time.sleep(0.012)" not in src, "async 生成器内不得使用阻塞 time.sleep"
+    assert "await asyncio.sleep(0.012)" in src, "应使用 await asyncio.sleep 让出事件循环"
+
+
 def test_script_syntax_valid():
     # 若环境有 node，做语法校验；否则跳过（不视为失败）
     try:

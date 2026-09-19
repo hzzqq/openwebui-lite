@@ -1430,3 +1430,56 @@ def test_chat_empty_messages_returns_422():
     r = c.post("/api/chat?stream=0", json={"messages": []})
     assert r.status_code == 422
     assert "messages" in r.json().get("detail", "").lower() or "不能为空" in r.json().get("detail", "")
+
+
+def test_regenerate_keeps_old_reply_when_generation_fails(monkeypatch):
+    """R2 数据丢失修复验证：生成失败（error 事件）时旧回复必须原样保留。
+
+    修复前 regenerate「先删旧回复再生成」：LLM 报错或用户中断时旧回复已删、
+    新回复未落库，原回答永久丢失。现改为新回复成功落盘后才删旧。
+    """
+    import json as _json
+
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    main.db_store.save_messages(sid, [
+        {"role": "user", "content": "问"},
+        {"role": "assistant", "content": "珍贵旧回答"},
+    ])
+
+    async def fake_ollama(model, messages, **kwargs):
+        yield main._sse("error", _json.dumps("后端不可用", ensure_ascii=False))
+
+    monkeypatch.setattr(main, "MOCK_LLM", False)
+    monkeypatch.setattr(main, "_ollama_stream", fake_ollama)
+    r = c.post(f"/api/sessions/{sid}/regenerate")
+    assert r.status_code == 200
+    msgs = main.db_store.get_messages(sid)
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert msgs[1]["content"] == "珍贵旧回答"  # 未被误删/替换
+
+
+def test_regenerate_success_still_replaces_old_reply(monkeypatch):
+    """回归保护：改为「成功后才删旧」后，正常重生成路径仍应替换旧回复。"""
+    import json as _json
+
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    main.db_store.save_messages(sid, [
+        {"role": "user", "content": "问"},
+        {"role": "assistant", "content": "旧回答"},
+    ])
+
+    async def fake_ollama(model, messages, **kwargs):
+        yield main._sse("token", _json.dumps("新", ensure_ascii=False))
+        yield main._sse("token", _json.dumps("回答", ensure_ascii=False))
+        yield main._sse("done", _json.dumps({"ok": True}, ensure_ascii=False))
+
+    monkeypatch.setattr(main, "MOCK_LLM", False)
+    monkeypatch.setattr(main, "_ollama_stream", fake_ollama)
+    r = c.post(f"/api/sessions/{sid}/regenerate")
+    assert r.status_code == 200
+    msgs = main.db_store.get_messages(sid)
+    assert [m["role"] for m in msgs] == ["user", "assistant"]
+    assert msgs[1]["content"] == "新回答"
+    assert "旧回答" not in [m["content"] for m in msgs]

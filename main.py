@@ -15,6 +15,7 @@ OpenWebUI Lite — 对接本地 Ollama 的轻量 LLM 聊天前端 MVP
 直接以 SSE 分片返回一段预设的中文流式文本。
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -137,11 +138,14 @@ def _sse(event: str, data: str) -> str:
 async def _collect_sse_text(gen) -> str:
     """把 SSE 事件流还原为纯文本（非流式模式复用同一套生成器）。
 
-    事件形如 "event: token\ndata: \"...\"\n\n"；token 事件 data 为字符串，
-    done/error 事件 data 为对象（忽略其文本）。用于 stream=0 时拼出完整回复。
+    事件形如 "event: token\ndata: \"...\"\n\n"；只收集 token 事件的字符串 data。
+    R2 修复（与 regenerate 落盘同源的隐性陷阱）：error 事件的 data 也是字符串，
+    原实现按「解析结果是 str 就收」会把错误文案混入回复正文。现只认 token 事件。
     """
     parts = []
     async for evt in gen:
+        if not evt.startswith("event: token"):
+            continue
         if "data: " not in evt:
             continue
         payload = evt.split("data: ", 1)[1].strip()
@@ -170,7 +174,10 @@ async def _mock_stream(user_msg: str) -> str:
     # 逐字分片，模拟真实 token 流
     for ch in text:
         yield _sse("token", json.dumps(ch, ensure_ascii=False))
-        time.sleep(0.012)
+        # R2 修复（事件循环阻塞）：async 生成器内绝不能用阻塞的 time.sleep——
+        # 一次 mock 回复约 5 秒内会卡死整个事件循环，health/models/其他会话的
+        # 并发请求全部停摆。await asyncio.sleep 让出控制权，并发不受影响。
+        await asyncio.sleep(0.012)
     yield _sse("done", json.dumps({"ok": True}, ensure_ascii=False))
 
 
@@ -720,10 +727,14 @@ async def regenerate_ep(sid: str, temperature: "float | None" = None, max_tokens
     msgs = db_store.get_messages(sid)
     if not msgs:
         raise HTTPException(status_code=400, detail="会话无消息，无法重新生成")
-    # 末尾若是助手回复，先移除以替换
+    # 末尾若是助手回复：只记录其 id，待新回复成功落盘后再移除（见 event_gen 尾部）。
+    # R2 修复（数据丢失）：原实现「先删后生成」——LLM 报错（error 事件）或用户
+    # 点「停止」中断流时，旧回复已删、新回复未落库，原回答永久丢失。
+    # 现改为生成成功才删旧：任何失败路径下旧回复原样保留。
+    old_assistant_id = None
     if msgs[-1].get("role") == "assistant":
-        db_store.delete_message(msgs[-1]["id"])
-        msgs = msgs[:-1]
+        old_assistant_id = msgs[-1]["id"]
+        msgs = msgs[:-1]  # 历史上下文仍不含旧回复（与原语义一致）
     if not msgs:
         raise HTTPException(status_code=400, detail="没有可作为上下文的用户消息")
 
@@ -736,6 +747,7 @@ async def regenerate_ep(sid: str, temperature: "float | None" = None, max_tokens
 
     async def event_gen():
         token_parts: list = []
+        saw_error = False
         if MOCK_LLM:
             gen = _mock_stream(user_text)
         else:
@@ -752,6 +764,12 @@ async def regenerate_ep(sid: str, temperature: "float | None" = None, max_tokens
                 temperature=temperature, max_tokens=max_tokens, top_p=top_p
             )
         async for chunk in gen:
+            # R2 修复（错误文案冒充回复）：error 事件的 data 同样是 JSON 字符串，
+            # 原实现只按「解析结果是 str」收集，会把错误文案当回复 token 累加，
+            # 进而被当作新回复落库（并把旧回复替换掉）。遇 error 事件标记后
+            # 一律不落盘。
+            if chunk.startswith("event: error"):
+                saw_error = True
             # 从 token 事件抽取文本，留待流结束后落盘
             if "data: " in chunk:
                 payload = chunk.split("data: ", 1)[1].strip()
@@ -763,8 +781,12 @@ async def regenerate_ep(sid: str, temperature: "float | None" = None, max_tokens
                     token_parts.append(data)
             yield chunk
         reply = "".join(token_parts)
-        if reply:
+        if reply and not saw_error:
             db_store.append_message(sid, "assistant", reply)
+            # 新回复成功落盘后才移除旧回复（若 reply 为空/出错则保留旧回复，
+            # 避免「旧的删了、新的没写」造成的回复丢失）
+            if old_assistant_id is not None:
+                db_store.delete_message(old_assistant_id)
 
     return StreamingResponse(
         event_gen(),
