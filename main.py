@@ -802,10 +802,12 @@ async def current_session_ep():
 
 # ---------- 启动说明 ----------
 if __name__ == "__main__":
-    import uvicorn
+    import os, webbrowser, uvicorn
 
-    print("OpenWebUI Lite 启动中…")
+    os.environ.setdefault("MOCK_LLM", "1")
+    print("OpenWebUI Lite 启动中…（将自动打开浏览器）")
     print(f"  MOCK_LLM = {MOCK_LLM}")
     print(f"  OLLAMA_HOST = {OLLAMA_BASE}")
     log.info("OpenWebUI Lite 启动 MOCK_LLM=%s OLLAMA_HOST=%s", MOCK_LLM, OLLAMA_BASE)
+    webbrowser.open("http://localhost:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)
