@@ -58,8 +58,9 @@ def test_conversation_roles_use_assistant_contract():
     永久留在 conversation，之后每次发送都 422，只能刷新页面恢复。
     """
     assert 'role: "bot", content' not in HTML, "conversation 不得入栈非法 role 'bot'"
-    assert HTML.count('conversation.push({ role: "assistant"') == 2, \
-        "send 与 regenerate 两条链路都应把回复以 'assistant' 入栈"
+    # 3 处 = send 成功 / send 手动中止（部分回复入栈，c165 R1）/ regenerate 成功
+    assert HTML.count('conversation.push({ role: "assistant"') == 3, \
+        "全部 assistant 入栈点（含 c165 中止保留分支）都必须使用后端合法 role"
     assert 'm.role === "assistant"' in HTML, "refreshRegenBtn 应按 assistant 判断（原 'bot' 判断使刷新后按钮永不出现）"
 
 
@@ -92,3 +93,25 @@ def test_script_syntax_valid():
         pytest.skip("node 不可用，跳过 JS 语法校验")
     # 非零且非 127 => 语法错误
     assert node.returncode == 0, "index.html 的 <script> 存在语法错误"
+
+
+def test_abort_keeps_partial_reply():
+    """R1（c165）验证：手动停止生成必须保留已生成的部分回复，而非整段
+    丢弃并把气泡覆盖为「连接异常：The user aborted a request.」。
+
+    - send 链路：中止分支识别 AbortError，部分内容入栈 conversation 并
+      persistAssistant 入库（与正常完成路径一致）；
+    - regenerate 链路：中止分支提示「本次未保存，原回复已保留」（后端
+      c164 起改为成功才删旧，刷新后回到完整旧回复，不产生双 assistant）。
+    """
+    assert HTML.count('e.name === "AbortError"') == 2, \
+        "send 与 regenerate 的 catch 均应识别 AbortError（手动停止）"
+    assert "已手动停止，以上为已生成的部分回复" in HTML, \
+        "send 中止后应保留已生成部分并明确提示"
+    assert "已停止（尚未生成内容）。" in HTML, \
+        "无任何生成内容时中止也应给出明确提示"
+    assert "本次未保存，原回复已保留" in HTML, \
+        "regenerate 中止应说明未保存且原回复保留"
+    # acc 必须在 try 外声明（否则 catch 分支拿不到已生成部分）
+    assert HTML.count("  let acc = \"\";\n\n  try {") == 2, \
+        "send/regenerate 的 acc 应提升到 try 外声明"

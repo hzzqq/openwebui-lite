@@ -334,6 +334,9 @@ async function send() {
   $("regenBtn").style.display = "none";
   statusEl.textContent = "生成中…";
   statusEl.className = "mock";
+  // R1（c165）：acc 提升到 try 外——catch 的「手动停止」分支需要读取
+  // 中断时刻已生成的部分回复（原先声明在 try 内，catch 拿不到）。
+  let acc = "";
 
   try {
     const resp = await fetch("/api/chat", {
@@ -351,7 +354,6 @@ async function send() {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buf = "";
-    let acc = "";
 
     while (true) {
       const { done, value } = await reader.read();
@@ -393,7 +395,19 @@ async function send() {
     await persistAssistant("assistant", acc);
   } catch (e) {
     bubble.classList.remove("cursor");
-    bubble.textContent = "连接异常：" + e.message;
+    if (e && e.name === "AbortError") {
+      // R1（c165）：手动停止——保留已生成的部分回复并入库。原实现整段
+      // 丢弃，气泡被「连接异常：The user aborted a request.」错误文案覆盖。
+      if (acc) {
+        bubble.textContent = acc + "\n\n（已手动停止，以上为已生成的部分回复）";
+        conversation.push({ role: "assistant", content: acc });
+        await persistAssistant("assistant", acc);
+      } else {
+        bubble.textContent = "已停止（尚未生成内容）。";
+      }
+    } else {
+      bubble.textContent = "连接异常：" + e.message;
+    }
   } finally {
     bubble.classList.remove("cursor");
     streaming = false;
@@ -438,6 +452,8 @@ async function regenerate() {
   $("regenBtn").style.display = "none";
   statusEl.textContent = "重新生成中…";
   statusEl.className = "mock";
+  // R1（c165）：acc 提升到 try 外，供 catch 的「手动停止」分支读取。
+  let acc = "";
 
   try {
     const resp = await fetch("/api/sessions/" + currentSessionId + "/regenerate", {
@@ -454,7 +470,7 @@ async function regenerate() {
     }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder("utf-8");
-    let buf = "", acc = "";
+    let buf = "";
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -484,7 +500,16 @@ async function regenerate() {
     conversation.push({ role: "assistant", content: acc });
   } catch (e) {
     bubble.classList.remove("cursor");
-    bubble.textContent = "连接异常：" + e.message;
+    if (e && e.name === "AbortError") {
+      // R1（c165）：重生成手动停止——显示已生成部分但不入库：原回复已在
+      // DB 保留（后端 c164 起改为成功才删旧），入库会造成「旧回复 + 半截
+      // 新回复」双 assistant；刷新后回到完整旧回复，语义清晰不丢内容。
+      bubble.textContent = acc
+        ? acc + "\n\n（已手动停止：本次未保存，原回复已保留，刷新可见）"
+        : "已停止：本次未生成内容，原回复已保留。";
+    } else {
+      bubble.textContent = "连接异常：" + e.message;
+    }
   } finally {
     bubble.classList.remove("cursor");
     streaming = false;
