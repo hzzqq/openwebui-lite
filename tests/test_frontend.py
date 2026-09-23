@@ -110,8 +110,27 @@ def test_abort_keeps_partial_reply():
         "send 中止后应保留已生成部分并明确提示"
     assert "已停止（尚未生成内容）。" in HTML, \
         "无任何生成内容时中止也应给出明确提示"
-    assert "本次未保存，原回复已保留" in HTML, \
-        "regenerate 中止应说明未保存且原回复保留"
+    assert "本次未保存，原回复已恢复" in HTML, \
+        "regenerate 中止应说明未保存且本地已恢复原回复（c166）"
     # acc 必须在 try 外声明（否则 catch 分支拿不到已生成部分）
     assert HTML.count("  let acc = \"\";\n\n  try {") == 2, \
         "send/regenerate 的 acc 应提升到 try 外声明"
+
+
+def test_regenerate_restores_old_reply_on_failure():
+    """R2（c166）：regenerate 失败/中止/连接异常路径必须本地补回旧回复
+    （否则下一次 send 整体覆盖保存会把它从 DB 抹掉）。"""
+    assert "const removedMsg = conversation[idx];" in HTML
+    assert "conversation.push(removedMsg);" in HTML
+    assert "let sawError = false;" in HTML
+    assert "原回复已恢复" in HTML
+    assert "刷新可见" not in HTML, "旧文案「刷新可见」应替换为「已恢复」语义"
+
+
+def test_delete_current_session_guards_and_sync():
+    """R2（c166）：删除当前会话需 streaming 守卫，且同步到后端已重建的会话
+    （不再调 newChat 二次建孤儿空会话）。"""
+    assert "正在生成回复，请先停止后再删除当前会话" in HTML
+    assert "async function reloadCurrentSession()" in HTML
+    assert "if (s.id === currentSessionId) {" in HTML
+    assert "if (s.id === current) newChat();" not in HTML

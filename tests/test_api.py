@@ -1483,3 +1483,27 @@ def test_regenerate_success_still_replaces_old_reply(monkeypatch):
     assert [m["role"] for m in msgs] == ["user", "assistant"]
     assert msgs[1]["content"] == "新回答"
     assert "旧回答" not in [m["content"] for m in msgs]
+
+
+def test_regenerate_uses_body_model(monkeypatch):
+    """R2 修复（c166）：regenerate 应接收前端 body 里的 model 并记忆到会话
+    （原实现只声明查询参数，body 被 FastAPI 静默丢弃，用户切换模型后重生成
+    仍用旧模型）。"""
+    import json as _json
+
+    captured = {}
+
+    async def fake_ollama(model, messages, **kwargs):
+        captured["model"] = model
+        yield main._sse("token", _json.dumps("新回答", ensure_ascii=False))
+        yield main._sse("done", _json.dumps({"ok": True}, ensure_ascii=False))
+
+    c = TestClient(main.app)
+    sid = main.db_store.new_session()
+    main.db_store.save_messages(sid, [{"role": "user", "content": "问"}])
+    monkeypatch.setattr(main, "MOCK_LLM", False)
+    monkeypatch.setattr(main, "_ollama_stream", fake_ollama)
+    r = c.post(f"/api/sessions/{sid}/regenerate", json={"model": "qwen-new"})
+    assert r.status_code == 200
+    assert captured["model"] == "qwen-new"
+    assert main.db_store.get_model(sid) == "qwen-new"

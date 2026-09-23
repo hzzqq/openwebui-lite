@@ -283,6 +283,17 @@ class AppendMessageRequest(BaseModel):
     content: str = ""
 
 
+class RegenerateRequest(BaseModel):
+    """重新生成请求体（可选，全部字段可缺省）。
+
+    R2 修复（c166）：前端 regenerate 一直 POST {model}，但端点此前只声明
+    查询参数、无 body 模型——FastAPI 静默丢弃 body，用户切换模型后点
+    「重新生成」仍用会话旧模型。现与 chat 口径对齐：请求显式 model >
+    本会话已存模型 > 全局默认。
+    """
+    model: str = ""
+
+
 @app.get("/api/models")
 async def models():
     return {"models": await _fetch_models(), "mock": MOCK_LLM}
@@ -709,7 +720,13 @@ async def clear_messages_ep(sid: str):
 
 
 @app.post("/api/sessions/{sid}/regenerate")
-async def regenerate_ep(sid: str, temperature: "float | None" = None, max_tokens: "int | None" = None, top_p: "float | None" = None):
+async def regenerate_ep(
+    sid: str,
+    req: "RegenerateRequest | None" = None,
+    temperature: "float | None" = None,
+    max_tokens: "int | None" = None,
+    top_p: "float | None" = None,
+):
     """重新生成最后一条助手回复（常见聊天 UX：对上一条回答不满意时重答）。
 
     R1 新能力：若会话末尾是助手回复，先删除它再基于其前的历史重新生成；
@@ -751,11 +768,18 @@ async def regenerate_ep(sid: str, temperature: "float | None" = None, max_tokens
         if MOCK_LLM:
             gen = _mock_stream(user_text)
         else:
+            # R2 修复（c166）：模型解析与 chat 口径对齐——请求显式 model（body）
+            # > 本会话已存模型 > 全局默认，并提供后记忆到会话。原实现完全忽略
+            # 前端 body 里一直携带的 model。
+            req_model = (req.model if req else "") or ""
             model = (
-                db_store.get_model(sid)
+                req_model
+                or db_store.get_model(sid)
                 or db_store.get_setting("default_model")
                 or None
             )
+            if model:
+                db_store.set_model(sid, model)
             if not model:
                 yield _sse("error", json.dumps("请先选择或输入模型名称", ensure_ascii=False))
                 return

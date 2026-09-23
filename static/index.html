@@ -440,6 +440,10 @@ async function regenerate() {
     if (conversation[i].role === "assistant") { idx = i; break; }
   }
   if (idx === -1) return;
+  // R2（c166）：记下被移除的旧回复。后端仅在生成成功后才删旧（c164），
+  // 任何失败/中止路径 DB 里旧回复仍在——本地必须补回，否则下一次 send()
+  // 整体覆盖式保存会把它从 DB 抹掉（与「原回复已保留」承诺矛盾的真实丢数据）。
+  const removedMsg = conversation[idx];
   conversation = conversation.slice(0, idx);
   const bots = messagesEl.querySelectorAll(".msg.bot");
   if (bots.length) bots[bots.length - 1].remove();
@@ -465,12 +469,14 @@ async function regenerate() {
     if (!resp.ok) {
       bubble.classList.remove("cursor");
       bubble.textContent = "重新生成失败：" + resp.status;
+      conversation.push(removedMsg); // R2（c166）：失败路径本地补回旧回复
       streaming = false;
       return;
     }
     const reader = resp.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buf = "";
+    let sawError = false;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -494,21 +500,28 @@ async function regenerate() {
         } else if (event === "error") {
           bubble.classList.remove("cursor");
           bubble.textContent = "错误：" + payload;
+          sawError = true;
         }
       }
     }
-    conversation.push({ role: "assistant", content: acc });
+    // R2（c166）：error 事件时后端不落盘（c164 语义）、DB 旧回复仍在，
+    // 本地补回旧回复而非把（可能不完整的）acc 当作新回复入栈。
+    if (sawError) {
+      bubble.textContent = "重新生成失败：" + "生成出错，原回复已恢复。";
+      conversation.push(removedMsg);
+    } else {
+      conversation.push({ role: "assistant", content: acc });
+    }
   } catch (e) {
     bubble.classList.remove("cursor");
     if (e && e.name === "AbortError") {
-      // R1（c165）：重生成手动停止——显示已生成部分但不入库：原回复已在
-      // DB 保留（后端 c164 起改为成功才删旧），入库会造成「旧回复 + 半截
-      // 新回复」双 assistant；刷新后回到完整旧回复，语义清晰不丢内容。
-      bubble.textContent = acc
-        ? acc + "\n\n（已手动停止：本次未保存，原回复已保留，刷新可见）"
-        : "已停止：本次未生成内容，原回复已保留。";
+      // R1（c165）/R2（c166）：重生成手动停止——显示已生成部分但不入库；
+      // 旧回复直接补回本地（DB 里也仍在），无需刷新即可继续对话。
+      bubble.textContent = (acc ? acc + "\n\n" : "") + "（已手动停止：本次未保存，原回复已恢复）";
+      conversation.push(removedMsg);
     } else {
       bubble.textContent = "连接异常：" + e.message;
+      conversation.push(removedMsg); // R2（c166）：连接异常同样补回
     }
   } finally {
     bubble.classList.remove("cursor");
@@ -541,6 +554,27 @@ async function newChat() {
   const ne = $("empty");
   if (ne) ne.style.display = "";
   loadSessions(); // 同步侧边栏当前会话高亮
+}
+
+// R2（c166）：删除当前会话后同步到后端已自动重建的新会话（清空本地 UI，
+// 不再调用 newChat 二次建会话）。
+async function reloadCurrentSession() {
+  try {
+    const resp = await fetch("/api/history");
+    const data = await resp.json();
+    if (data.session_id) currentSessionId = data.session_id;
+  } catch (e) { /* 同步失败保持现状，刷新页面可恢复 */ }
+  conversation = [];
+  updateTitle("");
+  messagesEl.innerHTML = "";
+  const e = document.createElement("div");
+  e.className = "empty";
+  e.id = "empty";
+  e.innerHTML = "<h2>会话已删除</h2><div>已切换到新的空会话。</div>";
+  messagesEl.appendChild(e);
+  const ne = $("empty");
+  if (ne) ne.style.display = "";
+  refreshRegenBtn();
 }
 
 // ---- 多会话管理（让后端 /api/sessions 能力在界面可用）----
@@ -576,11 +610,22 @@ async function loadSessions() {
       del.title = "删除会话";
       del.addEventListener("click", async (ev) => {
         ev.stopPropagation();
+        // R2（c166）：流式生成中禁止删除当前会话——后端删除会自动重建当前
+        // 会话并切换指针，进行中的流结束后 persistAssistant 会把回复写进这个
+        // 无关的新会话（原会话消息已随删除丢失）。
+        if (streaming && s.id === currentSessionId) {
+          alert("正在生成回复，请先停止后再删除当前会话。");
+          return;
+        }
         if (!confirm("确定删除该会话？")) return;
         try {
           await fetch("/api/sessions/" + s.id, { method: "DELETE" });
         } catch (e) {}
-        if (s.id === current) newChat();
+        if (s.id === currentSessionId) {
+          // R2（c166）：后端删除当前会话时会自动重建新会话并切换指针，
+          // 这里同步到该新会话即可；原先再调 newChat 会多建一个孤儿空会话。
+          await reloadCurrentSession();
+        }
         loadSessions();
       });
       const exp = document.createElement("button");
