@@ -7,3 +7,6 @@ sessions.db-shm
 
 # pytest 临时目录（verify_all.py 固定 basetemp）
 .pytest_tmp/
+
+# 本机端口分配文件（port-doctor skill 生成）
+.port.env
